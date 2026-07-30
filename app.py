@@ -112,6 +112,13 @@ st.markdown("""
         font-size: 12px;
         font-weight: 600;
     }
+    .chart-selector-container {
+        background-color: #f8fafc;
+        padding: 10px 16px;
+        border-radius: 10px;
+        border: 1px solid #e2e8f0;
+        margin-bottom: 15px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -371,7 +378,7 @@ if st.session_state.is_admin:
 
 st.sidebar.markdown("---")
 
-# Botones de inicio y detención (Sin botón de limpiar datos)
+# Botones de inicio y detención
 if not config_app.get("monitoreo_activo", False):
     if st.sidebar.button("▶️ Iniciar Monitoreo", use_container_width=True, type="primary", disabled=not st.session_state.is_admin):
         config_app["monitoreo_activo"] = True
@@ -416,22 +423,14 @@ with col_head2:
         st.caption(f"Última lectura: {config_app.get('last_online_check', 'Sin conexión')}")
     st.markdown("</div>", unsafe_allow_html=True)
 
-# Pestañas de Vista Temporal Superior
-tab_vista = st.radio(
-    "",
-    ["Hora a Hora", "Día", "Mes", "Año", "Total"],
-    horizontal=True,
-    key="selected_view_mode"
-)
-
 st.markdown("---")
 
 # Variables para las métricas globales
 total_consumo_kwh = 0.0
 total_exportado_kwh = 0.0
 total_generacion_kwh = 0.0
-pct_consumo = 50.0
-pct_ared = 50.0
+pct_consumo = 100.0
+pct_ared = 0.0
 ganancia_cop = 0.0
 horas_plena_carga = 0.0
 
@@ -447,22 +446,22 @@ if not df_all.empty:
     ganancia_cop = total_exportado_kwh * config_app.get("tarifa_cop", 850.0)
     horas_plena_carga = round(total_generacion_kwh / 5.0, 2) if total_generacion_kwh > 0 else 0.0
 
-# --- SECCIÓN: ESTADÍSTICAS DE ENERGÍA (BARRAS + TARJETAS DE MÉTRICAS) ---
+# --- SECCIÓN: ESTADÍSTICAS DE ENERGÍA ---
 st.markdown("### Estadísticas de Energía ⚙️")
 
 st.markdown(f"""
 <div class="energy-card">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
         <span style="font-size: 18px; font-weight: 600; color: #1e293b;">
-            Generación: <strong style="font-size: 22px;">{total_generacion_kwh:.2f} kWh</strong>
+            Consumo Total Medido: <strong style="font-size: 22px;">{total_consumo_kwh:.2f} kWh</strong>
         </span>
     </div>
-    <div style="width: 100%; background-color: #3498db; border-radius: 8px; display: flex; height: 24px; overflow: hidden;">
+    <div style="width: 100%; background-color: #e2e8f0; border-radius: 8px; display: flex; height: 24px; overflow: hidden;">
         <div style="width: {pct_consumo}%; background-color: #8e44ad; color: white; font-weight: bold; font-size: 12px; display: flex; align-items: center; padding-left: 10px;">
             {pct_consumo}% Al consumo
         </div>
         <div style="width: {pct_ared}%; background-color: #2980b9; color: white; font-weight: bold; font-size: 12px; display: flex; align-items: center; justify-content: flex-end; padding-right: 10px;">
-            {pct_ared}% A red
+            {pct_ared}% A red (Inyección)
         </div>
     </div>
 </div>
@@ -482,7 +481,7 @@ with m2:
     st.markdown(f"""
     <div class="energy-card">
         <div class="metric-value">{total_consumo_kwh:.2f} <span style="font-size: 14px;">kWh</span></div>
-        <div class="metric-label">Importado</div>
+        <div class="metric-label">Importado (Red)</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -498,7 +497,7 @@ with m4:
     st.markdown(f"""
     <div class="energy-card">
         <div class="metric-value">{total_generacion_kwh:.2f} <span style="font-size: 14px;">kWh</span></div>
-        <div class="metric-label">Generación total</div>
+        <div class="metric-label">Energía Total</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -506,7 +505,7 @@ with m5:
     st.markdown(f"""
     <div class="energy-card">
         <div class="metric-value">${ganancia_cop:,.0f} <span style="font-size: 12px;">COP</span></div>
-        <div class="metric-label">Ganancia estimada</div>
+        <div class="metric-label">Ganancia inyección</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -514,7 +513,7 @@ with m6:
     st.markdown(f"""
     <div class="energy-card">
         <div class="metric-value">{horas_plena_carga:.2f} <span style="font-size: 14px;">h</span></div>
-        <div class="metric-label">Horas plena carga</div>
+        <div class="metric-label">Horas equivalente</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -531,7 +530,6 @@ latest_ia = df_all.iloc[-1]['Ia'] if not df_all.empty and 'Ia' in df_all.columns
 latest_ib = df_all.iloc[-1]['Ib'] if not df_all.empty and 'Ib' in df_all.columns else 0.0
 latest_ic = df_all.iloc[-1]['Ic'] if not df_all.empty and 'Ic' in df_all.columns else 0.0
 
-# Tacómetros Dinámicos (Gauges) de Voltaje por Fase
 col_g_v1, col_g_v2, col_g_v3 = st.columns(3)
 
 def crear_gauge_voltaje(valor, titulo, color="#2563eb"):
@@ -570,7 +568,6 @@ with col_g_v2:
 with col_g_v3:
     st.plotly_chart(crear_gauge_voltaje(latest_vc, "Voltaje Fase C (Vc)", "#ec4899"), use_container_width=True)
 
-# Tacómetros Dinámicos (Gauges) de Amperaje / Corriente por Fase
 col_g_i1, col_g_i2, col_g_i3 = st.columns(3)
 
 def crear_gauge_amperaje(valor, titulo, color="#059669"):
@@ -604,33 +601,64 @@ with col_g_i2:
 with col_g_i3:
     st.plotly_chart(crear_gauge_amperaje(latest_ic, "Corriente Fase C (Ic)", "#6366f1"), use_container_width=True)
 
-# Gráfico Evolutivo de Cambios en Fases (Líneas de Voltaje y Amperaje en el tiempo)
 if not df_all.empty:
     with st.expander("📈 Ver Evolución Histórica de Amperajes y Voltajes por Fase", expanded=True):
         col_chart_v, col_chart_i = st.columns(2)
         
         with col_chart_v:
             fig_v = go.Figure()
-            fig_v.add_trace(go.Scatter(x=df_all['timestamp'], y=df_all['Va'], mode='lines', name='Va (Voltios)', line=dict(color='#3b82f6')))
-            fig_v.add_trace(go.Scatter(x=df_all['timestamp'], y=df_all['Vb'], mode='lines', name='Vb (Voltios)', line=dict(color='#8b5cf6')))
-            fig_v.add_trace(go.Scatter(x=df_all['timestamp'], y=df_all['Vc'], mode='lines', name='Vc (Voltios)', line=dict(color='#ec4899')))
-            fig_v.update_layout(title="Variación de Voltajes por Fase (V)", template='plotly_white', height=300, margin=dict(l=20, r=20, t=40, b=20))
+            fig_v.add_trace(go.Scatter(
+                x=df_all['timestamp'], y=df_all['Va'], mode='lines', name='Va (Voltios)', line=dict(color='#3b82f6'),
+                hovertemplate='<b>%{x}</b><br>Va: <b>%{y:.1f} V</b><extra></extra>'
+            ))
+            fig_v.add_trace(go.Scatter(
+                x=df_all['timestamp'], y=df_all['Vb'], mode='lines', name='Vb (Voltios)', line=dict(color='#8b5cf6'),
+                hovertemplate='<b>%{x}</b><br>Vb: <b>%{y:.1f} V</b><extra></extra>'
+            ))
+            fig_v.add_trace(go.Scatter(
+                x=df_all['timestamp'], y=df_all['Vc'], mode='lines', name='Vc (Voltios)', line=dict(color='#ec4899'),
+                hovertemplate='<b>%{x}</b><br>Vc: <b>%{y:.1f} V</b><extra></extra>'
+            ))
+            fig_v.update_layout(title="Variación de Voltajes por Fase (V)", template='plotly_white', height=300, margin=dict(l=20, r=20, t=40, b=20), hovermode='x unified')
             st.plotly_chart(fig_v, use_container_width=True)
 
         with col_chart_i:
             fig_i = go.Figure()
-            fig_i.add_trace(go.Scatter(x=df_all['timestamp'], y=df_all['Ia'], mode='lines', name='Ia (Amperios)', line=dict(color='#10b981')))
-            fig_i.add_trace(go.Scatter(x=df_all['timestamp'], y=df_all['Ib'], mode='lines', name='Ib (Amperios)', line=dict(color='#f59e0b')))
-            fig_i.add_trace(go.Scatter(x=df_all['timestamp'], y=df_all['Ic'], mode='lines', name='Ic (Amperios)', line=dict(color='#6366f1')))
-            fig_i.update_layout(title="Variación de Amperajes por Fase (A)", template='plotly_white', height=300, margin=dict(l=20, r=20, t=40, b=20))
+            fig_i.add_trace(go.Scatter(
+                x=df_all['timestamp'], y=df_all['Ia'], mode='lines', name='Ia (Amperios)', line=dict(color='#10b981'),
+                hovertemplate='<b>%{x}</b><br>Ia: <b>%{y:.2f} A</b><extra></extra>'
+            ))
+            fig_i.add_trace(go.Scatter(
+                x=df_all['timestamp'], y=df_all['Ib'], mode='lines', name='Ib (Amperios)', line=dict(color='#f59e0b'),
+                hovertemplate='<b>%{x}</b><br>Ib: <b>%{y:.2f} A</b><extra></extra>'
+            ))
+            fig_i.add_trace(go.Scatter(
+                x=df_all['timestamp'], y=df_all['Ic'], mode='lines', name='Ic (Amperios)', line=dict(color='#6366f1'),
+                hovertemplate='<b>%{x}</b><br>Ic: <b>%{y:.2f} A</b><extra></extra>'
+            ))
+            fig_i.update_layout(title="Variación de Amperajes por Fase (A)", template='plotly_white', height=300, margin=dict(l=20, r=20, t=40, b=20), hovermode='x unified')
             st.plotly_chart(fig_i, use_container_width=True)
 
 st.markdown("---")
 
-# --- SECCIÓN: GRÁFICOS DINÁMICOS POR PESTAÑA TEMPORAL ---
+# =========================================================================
+# SECCIÓN: GRÁFICOS DINÁMICOS CON SELECCIÓN TEMPORAL DIRECTAMENTE SOBRE EL GRÁFICO
+# =========================================================================
+st.markdown("### 📊 Histórico de Consumo y Carga Electrica")
+
+# SELECCIÓN DE VISTA TEMPORAL COLOCADA DIRECTAMENTE SOBRE EL GRÁFICO
+st.markdown("<div class='chart-selector-container'>", unsafe_allow_html=True)
+tab_vista = st.radio(
+    "Seleccionar Período de Tiempo:",
+    ["Hora a Hora", "Día", "Mes", "Año", "Total"],
+    horizontal=True,
+    key="selected_view_mode_above_chart"
+)
+st.markdown("</div>", unsafe_allow_html=True)
+
 if not df_all.empty:
     if tab_vista == "Hora a Hora":
-        st.subheader("📊 Consumo e Inyección Acumulada Hora a Hora (kWh)")
+        st.subheader("📊 Consumo Acumulado Hora a Hora (kWh)")
         
         df_grouped = df_all.groupby('fecha_hora_slot').agg({
             'consumo_intervalo_wh': 'sum',
@@ -644,69 +672,77 @@ if not df_all.empty:
             x=df_grouped['fecha_hora_slot'],
             y=df_grouped['Consumo_kWh'],
             name='Consumo (kWh)',
-            marker_color='#8e44ad'
+            marker_color='#8e44ad',
+            text=df_grouped['Consumo_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
+            textposition='outside',
+            hovertemplate='<b>Fecha/Hora:</b> %{x}<br><b>Consumo:</b> %{y:.3f} kWh<extra></extra>'
         ))
-        fig.add_trace(go.Bar(
-            x=df_grouped['fecha_hora_slot'],
-            y=df_grouped['Exportado_kWh'],
-            name='Exportación (kWh)',
-            marker_color='#3498db'
-        ))
+        if df_grouped['Exportado_kWh'].sum() > 0:
+            fig.add_trace(go.Bar(
+                x=df_grouped['fecha_hora_slot'],
+                y=df_grouped['Exportado_kWh'],
+                name='Exportación (kWh)',
+                marker_color='#3498db',
+                text=df_grouped['Exportado_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
+                textposition='outside',
+                hovertemplate='<b>Fecha/Hora:</b> %{x}<br><b>Exportado:</b> %{y:.3f} kWh<extra></extra>'
+            ))
 
         fig.update_layout(
             barmode='group',
             template='plotly_white',
-            height=420,
+            height=430,
             xaxis_title="Hora (Fecha y Hora Colombia)",
             yaxis_title="kWh",
-            legend=dict(orientation="h", y=1.1, x=0)
+            legend=dict(orientation="h", y=1.12, x=0)
         )
         st.plotly_chart(fig, use_container_width=True)
 
     elif tab_vista == "Día":
-        st.subheader("📈 Perfil de Potencia y Carga Diario (kW)")
+        st.subheader("📈 Perfil de Potencia y Consumo Diario (kW)")
         
-        fig = go.Figure()
         df_all['potencia_kw'] = df_all['potencia_total_w'] / 1000.0
         df_all['consumo_kw'] = df_all['consumo_intervalo_wh'] / 1000.0
         df_all['export_kw'] = df_all['exportado_intervalo_wh'] / 1000.0
         
+        fig = go.Figure()
+        
+        # Potencia Activa Consumida (kW) - Corregido cuando el sistema solar está apagado
         fig.add_trace(go.Scatter(
             x=df_all['timestamp'],
             y=df_all['potencia_kw'],
-            mode='lines',
-            name='Producción (kW)',
-            line=dict(color='#f1c40f', width=2, shape='spline'),
+            mode='lines+markers',
+            name='Potencia Activa Consumida (kW)',
+            line=dict(color='#8e44ad', width=2, shape='spline'),
             fill='tozeroy',
-            fillcolor='rgba(241, 196, 15, 0.1)'
+            fillcolor='rgba(142, 68, 173, 0.1)',
+            hovertemplate='<b>Hora:</b> %{x}<br><b>Potencia Consumida:</b> %{y:.2f} kW<extra></extra>'
         ))
-        fig.add_trace(go.Scatter(
-            x=df_all['timestamp'],
-            y=df_all['export_kw'],
-            mode='lines',
-            name='Red eléctrica (Exportado kW)',
-            line=dict(color='#3498db', width=2, shape='spline')
-        ))
-        fig.add_trace(go.Scatter(
-            x=df_all['timestamp'],
-            y=df_all['consumo_kw'],
-            mode='lines',
-            name='Carga (Consumo kW)',
-            line=dict(color='#8e44ad', width=2, shape='spline')
-        ))
+
+        # Mostrar exportación solo si existe inyección medida
+        if df_all['export_kw'].sum() > 0:
+            fig.add_trace(go.Scatter(
+                x=df_all['timestamp'],
+                y=df_all['export_kw'],
+                mode='lines+markers',
+                name='Inyección a Red (kW)',
+                line=dict(color='#3498db', width=2, shape='spline'),
+                hovertemplate='<b>Hora:</b> %{x}<br><b>Inyección:</b> %{y:.2f} kW<extra></extra>'
+            ))
 
         fig.update_layout(
             template='plotly_white',
-            height=420,
+            height=430,
             xaxis_title="Hora (Colombia)",
             yaxis_title="kW",
-            legend=dict(orientation="h", y=1.1, x=0),
+            hovermode='x unified',
+            legend=dict(orientation="h", y=1.12, x=0),
             margin=dict(l=40, r=40, t=30, b=40)
         )
         st.plotly_chart(fig, use_container_width=True)
 
     elif tab_vista == "Mes":
-        st.subheader("📊 Consumo e Inyección Mensual por Días (kWh)")
+        st.subheader("📊 Consumo Mensual por Días (kWh)")
         
         df_grouped = df_all.groupby('fecha').agg({
             'consumo_intervalo_wh': 'sum',
@@ -720,27 +756,34 @@ if not df_all.empty:
             x=df_grouped['fecha'],
             y=df_grouped['Consumo_kWh'],
             name='Consumo (kWh)',
-            marker_color='#8e44ad'
+            marker_color='#8e44ad',
+            text=df_grouped['Consumo_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
+            textposition='outside',
+            hovertemplate='<b>Fecha:</b> %{x}<br><b>Consumo:</b> %{y:.2f} kWh<extra></extra>'
         ))
-        fig.add_trace(go.Bar(
-            x=df_grouped['fecha'],
-            y=df_grouped['Exportado_kWh'],
-            name='Exportación (kWh)',
-            marker_color='#3498db'
-        ))
+        if df_grouped['Exportado_kWh'].sum() > 0:
+            fig.add_trace(go.Bar(
+                x=df_grouped['fecha'],
+                y=df_grouped['Exportado_kWh'],
+                name='Exportación (kWh)',
+                marker_color='#3498db',
+                text=df_grouped['Exportado_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
+                textposition='outside',
+                hovertemplate='<b>Fecha:</b> %{x}<br><b>Exportado:</b> %{y:.2f} kWh<extra></extra>'
+            ))
 
         fig.update_layout(
             barmode='group',
             template='plotly_white',
-            height=420,
+            height=430,
             xaxis_title="Día del Mes",
             yaxis_title="kWh",
-            legend=dict(orientation="h", y=1.1, x=0)
+            legend=dict(orientation="h", y=1.12, x=0)
         )
         st.plotly_chart(fig, use_container_width=True)
 
     elif tab_vista == "Año":
-        st.subheader("📊 Consumo e Inyección Anual por Meses (kWh)")
+        st.subheader("📊 Consumo Anual por Meses (kWh)")
         
         df_grouped = df_all.groupby('mes').agg({
             'consumo_intervalo_wh': 'sum',
@@ -754,22 +797,29 @@ if not df_all.empty:
             x=df_grouped['mes'],
             y=df_grouped['Consumo_kWh'],
             name='Consumo (kWh)',
-            marker_color='#8e44ad'
+            marker_color='#8e44ad',
+            text=df_grouped['Consumo_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
+            textposition='outside',
+            hovertemplate='<b>Mes:</b> %{x}<br><b>Consumo:</b> %{y:.2f} kWh<extra></extra>'
         ))
-        fig.add_trace(go.Bar(
-            x=df_grouped['mes'],
-            y=df_grouped['Exportado_kWh'],
-            name='Exportación (kWh)',
-            marker_color='#3498db'
-        ))
+        if df_grouped['Exportado_kWh'].sum() > 0:
+            fig.add_trace(go.Bar(
+                x=df_grouped['mes'],
+                y=df_grouped['Exportado_kWh'],
+                name='Exportación (kWh)',
+                marker_color='#3498db',
+                text=df_grouped['Exportado_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
+                textposition='outside',
+                hovertemplate='<b>Mes:</b> %{x}<br><b>Exportado:</b> %{y:.2f} kWh<extra></extra>'
+            ))
 
         fig.update_layout(
             barmode='group',
             template='plotly_white',
-            height=420,
+            height=430,
             xaxis_title="Mes",
             yaxis_title="kWh",
-            legend=dict(orientation="h", y=1.1, x=0)
+            legend=dict(orientation="h", y=1.12, x=0)
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -788,22 +838,29 @@ if not df_all.empty:
             x=df_grouped['anio'],
             y=df_grouped['Consumo_kWh'],
             name='Consumo Total (kWh)',
-            marker_color='#8e44ad'
+            marker_color='#8e44ad',
+            text=df_grouped['Consumo_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
+            textposition='outside',
+            hovertemplate='<b>Año:</b> %{x}<br><b>Consumo Total:</b> %{y:.2f} kWh<extra></extra>'
         ))
-        fig.add_trace(go.Bar(
-            x=df_grouped['anio'],
-            y=df_grouped['Exportado_kWh'],
-            name='Exportado Total (kWh)',
-            marker_color='#3498db'
-        ))
+        if df_grouped['Exportado_kWh'].sum() > 0:
+            fig.add_trace(go.Bar(
+                x=df_grouped['anio'],
+                y=df_grouped['Exportado_kWh'],
+                name='Exportado Total (kWh)',
+                marker_color='#3498db',
+                text=df_grouped['Exportado_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
+                textposition='outside',
+                hovertemplate='<b>Año:</b> %{x}<br><b>Exportado Total:</b> %{y:.2f} kWh<extra></extra>'
+            ))
 
         fig.update_layout(
             barmode='group',
             template='plotly_white',
-            height=420,
+            height=430,
             xaxis_title="Año",
             yaxis_title="kWh",
-            legend=dict(orientation="h", y=1.1, x=0)
+            legend=dict(orientation="h", y=1.12, x=0)
         )
         st.plotly_chart(fig, use_container_width=True)
 
