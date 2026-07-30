@@ -658,209 +658,261 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 if not df_all.empty:
     if tab_vista == "Hora a Hora":
-        st.subheader("📊 Consumo Acumulado Hora a Hora (kWh)")
+        st.subheader("📊 Consumo Acumulado Hora a Hora (00 a 23)")
         
-        df_grouped = df_all.groupby('fecha_hora_slot').agg({
+        fechas_unicas = sorted(df_all['fecha'].unique(), reverse=True)
+        col_h1, col_h2 = st.columns([1, 3])
+        with col_h1:
+            fecha_sel_hora = st.selectbox("Seleccionar Fecha:", fechas_unicas, index=0)
+        
+        df_dia_sel = df_all[df_all['fecha'] == fecha_sel_hora].copy()
+        df_dia_sel['hora_str'] = pd.to_datetime(df_dia_sel['timestamp']).dt.strftime('%H')
+        
+        df_grouped_h = df_dia_sel.groupby('hora_str').agg({
             'consumo_intervalo_wh': 'sum',
             'exportado_intervalo_wh': 'sum'
         }).reset_index()
-        df_grouped['Consumo_kWh'] = df_grouped['consumo_intervalo_wh'] / 1000.0
-        df_grouped['Exportado_kWh'] = df_grouped['exportado_intervalo_wh'] / 1000.0
+        
+        horas_completas = [f"{h:02d}" for h in range(24)]
+        df_24h = pd.DataFrame({'hora_str': horas_completas})
+        df_24h = pd.merge(df_24h, df_grouped_h, on='hora_str', how='left').fillna(0.0)
+        
+        df_24h['Consumo_kWh'] = df_24h['consumo_intervalo_wh'] / 1000.0
+        df_24h['Exportado_kWh'] = df_24h['exportado_intervalo_wh'] / 1000.0
 
         fig = go.Figure()
         fig.add_trace(go.Bar(
-            x=df_grouped['fecha_hora_slot'],
-            y=df_grouped['Consumo_kWh'],
+            x=df_24h['hora_str'],
+            y=df_24h['Consumo_kWh'],
             name='Consumo (kWh)',
-            marker_color='#8e44ad',
-            text=df_grouped['Consumo_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
+            marker_color='#5c82ff',
+            marker_line_color='#3b82f6',
+            marker_line_width=1,
+            text=df_24h['Consumo_kWh'].apply(lambda v: f"{v:.1f}" if v > 0 else ""),
             textposition='outside',
-            hovertemplate='<b>Fecha/Hora:</b> %{x}<br><b>Consumo:</b> %{y:.3f} kWh<extra></extra>'
+            hovertemplate='<b>%{x}</b><br>2026   <b>%{y:.1f}</b>  (kWh)<extra></extra>'
         ))
-        if df_grouped['Exportado_kWh'].sum() > 0:
+
+        if df_24h['Exportado_kWh'].sum() > 0:
             fig.add_trace(go.Bar(
-                x=df_grouped['fecha_hora_slot'],
-                y=df_grouped['Exportado_kWh'],
+                x=df_24h['hora_str'],
+                y=df_24h['Exportado_kWh'],
                 name='Exportación (kWh)',
                 marker_color='#3498db',
-                text=df_grouped['Exportado_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
+                text=df_24h['Exportado_kWh'].apply(lambda v: f"{v:.1f}" if v > 0 else ""),
                 textposition='outside',
-                hovertemplate='<b>Fecha/Hora:</b> %{x}<br><b>Exportado:</b> %{y:.3f} kWh<extra></extra>'
+                hovertemplate='<b>%{x}</b><br>Exportado   <b>%{y:.1f}</b>  (kWh)<extra></extra>'
             ))
 
         fig.update_layout(
             barmode='group',
             template='plotly_white',
             height=430,
-            xaxis_title="Hora (Fecha y Hora Colombia)",
+            xaxis=dict(
+                title="Hora del Día (00, 01, 02... 23)",
+                type='category',
+                tickmode='array',
+                tickvals=horas_completas,
+                ticktext=horas_completas
+            ),
             yaxis_title="kWh",
-            legend=dict(orientation="h", y=1.12, x=0)
+            legend=dict(orientation="h", y=1.12, x=0),
+            margin=dict(l=30, r=30, t=30, b=40)
         )
         st.plotly_chart(fig, use_container_width=True)
 
     elif tab_vista == "Día":
-        st.subheader("📈 Perfil de Potencia y Consumo Diario (kW)")
+        st.subheader("📊 Consumo Acumulado por Días del Mes (01 a 31)")
         
-        df_all['potencia_kw'] = df_all['potencia_total_w'] / 1000.0
-        df_all['consumo_kw'] = df_all['consumo_intervalo_wh'] / 1000.0
-        df_all['export_kw'] = df_all['exportado_intervalo_wh'] / 1000.0
+        df_all['mes_str'] = pd.to_datetime(df_all['timestamp']).dt.strftime('%Y-%m')
+        meses_unicos = sorted(df_all['mes_str'].unique(), reverse=True)
+        
+        col_d1, col_d2 = st.columns([1, 3])
+        with col_d1:
+            mes_sel_dia = st.selectbox("Seleccionar Mes:", meses_unicos, index=0)
+        
+        df_mes_sel = df_all[df_all['mes_str'] == mes_sel_dia].copy()
+        df_mes_sel['dia_str'] = pd.to_datetime(df_mes_sel['timestamp']).dt.strftime('%d')
+        
+        df_grouped_d = df_mes_sel.groupby('dia_str').agg({
+            'consumo_intervalo_wh': 'sum',
+            'exportado_intervalo_wh': 'sum'
+        }).reset_index()
+        
+        dias_completos = [f"{d:02d}" for d in range(1, 32)]
+        df_31d = pd.DataFrame({'dia_str': dias_completos})
+        df_31d = pd.merge(df_31d, df_grouped_d, on='dia_str', how='left').fillna(0.0)
+        
+        df_31d['Consumo_kWh'] = df_31d['consumo_intervalo_wh'] / 1000.0
+        df_31d['Exportado_kWh'] = df_31d['exportado_intervalo_wh'] / 1000.0
         
         fig = go.Figure()
-        
-        # Potencia Activa Consumida (kW) - Corregido cuando el sistema solar está apagado
-        fig.add_trace(go.Scatter(
-            x=df_all['timestamp'],
-            y=df_all['potencia_kw'],
-            mode='lines+markers',
-            name='Potencia Activa Consumida (kW)',
-            line=dict(color='#8e44ad', width=2, shape='spline'),
-            fill='tozeroy',
-            fillcolor='rgba(142, 68, 173, 0.1)',
-            hovertemplate='<b>Hora:</b> %{x}<br><b>Potencia Consumida:</b> %{y:.2f} kW<extra></extra>'
+        fig.add_trace(go.Bar(
+            x=df_31d['dia_str'],
+            y=df_31d['Consumo_kWh'],
+            name='Consumo (kWh)',
+            marker_color='#5c82ff',
+            marker_line_color='#3b82f6',
+            marker_line_width=1,
+            text=df_31d['Consumo_kWh'].apply(lambda v: f"{v:.1f}" if v > 0 else ""),
+            textposition='outside',
+            hovertemplate='<b>Día %{x}</b><br>2026   <b>%{y:.1f}</b>  (kWh)<extra></extra>'
         ))
-
-        # Mostrar exportación solo si existe inyección medida
-        if df_all['export_kw'].sum() > 0:
-            fig.add_trace(go.Scatter(
-                x=df_all['timestamp'],
-                y=df_all['export_kw'],
-                mode='lines+markers',
-                name='Inyección a Red (kW)',
-                line=dict(color='#3498db', width=2, shape='spline'),
-                hovertemplate='<b>Hora:</b> %{x}<br><b>Inyección:</b> %{y:.2f} kW<extra></extra>'
+        
+        if df_31d['Exportado_kWh'].sum() > 0:
+            fig.add_trace(go.Bar(
+                x=df_31d['dia_str'],
+                y=df_31d['Exportado_kWh'],
+                name='Exportación (kWh)',
+                marker_color='#3498db',
+                text=df_31d['Exportado_kWh'].apply(lambda v: f"{v:.1f}" if v > 0 else ""),
+                textposition='outside',
+                hovertemplate='<b>Día %{x}</b><br>Exportado   <b>%{y:.1f}</b>  (kWh)<extra></extra>'
             ))
 
         fig.update_layout(
+            barmode='group',
             template='plotly_white',
             height=430,
-            xaxis_title="Hora (Colombia)",
-            yaxis_title="kW",
-            hovermode='x unified',
+            xaxis=dict(
+                title="Día del Mes (01, 02, 03... 31)",
+                type='category',
+                tickmode='array',
+                tickvals=dias_completos,
+                ticktext=dias_completos
+            ),
+            yaxis_title="kWh",
             legend=dict(orientation="h", y=1.12, x=0),
-            margin=dict(l=40, r=40, t=30, b=40)
+            margin=dict(l=30, r=30, t=30, b=40)
         )
         st.plotly_chart(fig, use_container_width=True)
+
+        with st.expander("📈 Ver Perfil Continuo de Potencia Intradía (kW)"):
+            df_all['potencia_kw'] = df_all['potencia_total_w'] / 1000.0
+            fig_kw = go.Figure()
+            fig_kw.add_trace(go.Scatter(
+                x=df_all['timestamp'],
+                y=df_all['potencia_kw'],
+                mode='lines+markers',
+                name='Potencia Activa Consumida (kW)',
+                line=dict(color='#8e44ad', width=2, shape='spline'),
+                fill='tozeroy',
+                fillcolor='rgba(142, 68, 173, 0.1)',
+                hovertemplate='<b>Hora:</b> %{x}<br><b>Potencia Consumida:</b> %{y:.2f} kW<extra></extra>'
+            ))
+            fig_kw.update_layout(template='plotly_white', height=300, xaxis_title="Hora (Colombia)", yaxis_title="kW", hovermode='x unified')
+            st.plotly_chart(fig_kw, use_container_width=True)
 
     elif tab_vista == "Mes":
-        st.subheader("📊 Consumo Mensual por Días (kWh)")
+        st.subheader("📊 Consumo Acumulado por Meses del Año (01 a 12)")
         
-        df_grouped = df_all.groupby('fecha').agg({
+        df_all['anio_str'] = pd.to_datetime(df_all['timestamp']).dt.strftime('%Y')
+        anios_unicos = sorted(df_all['anio_str'].unique(), reverse=True)
+        
+        col_m1, col_m2 = st.columns([1, 3])
+        with col_m1:
+            anio_sel_mes = st.selectbox("Seleccionar Año:", anios_unicos, index=0)
+            
+        df_anio_sel = df_all[df_all['anio_str'] == anio_sel_mes].copy()
+        df_anio_sel['mes_num'] = pd.to_datetime(df_anio_sel['timestamp']).dt.strftime('%m')
+        
+        df_grouped_m = df_anio_sel.groupby('mes_num').agg({
             'consumo_intervalo_wh': 'sum',
             'exportado_intervalo_wh': 'sum'
         }).reset_index()
-        df_grouped['Consumo_kWh'] = df_grouped['consumo_intervalo_wh'] / 1000.0
-        df_grouped['Exportado_kWh'] = df_grouped['exportado_intervalo_wh'] / 1000.0
-
+        
+        meses_completos = [f"{m:02d}" for m in range(1, 13)]
+        df_12m = pd.DataFrame({'mes_num': meses_completos})
+        df_12m = pd.merge(df_12m, df_grouped_m, on='mes_num', how='left').fillna(0.0)
+        
+        df_12m['Consumo_kWh'] = df_12m['consumo_intervalo_wh'] / 1000.0
+        df_12m['Exportado_kWh'] = df_12m['exportado_intervalo_wh'] / 1000.0
+        
         fig = go.Figure()
         fig.add_trace(go.Bar(
-            x=df_grouped['fecha'],
-            y=df_grouped['Consumo_kWh'],
+            x=df_12m['mes_num'],
+            y=df_12m['Consumo_kWh'],
             name='Consumo (kWh)',
-            marker_color='#8e44ad',
-            text=df_grouped['Consumo_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
+            marker_color='#5c82ff',
+            marker_line_color='#3b82f6',
+            marker_line_width=1,
+            text=df_12m['Consumo_kWh'].apply(lambda v: f"{v:.1f}" if v > 0 else ""),
             textposition='outside',
-            hovertemplate='<b>Fecha:</b> %{x}<br><b>Consumo:</b> %{y:.2f} kWh<extra></extra>'
+            hovertemplate='<b>Mes %{x}</b><br>2026   <b>%{y:.1f}</b>  (kWh)<extra></extra>'
         ))
-        if df_grouped['Exportado_kWh'].sum() > 0:
+        
+        if df_12m['Exportado_kWh'].sum() > 0:
             fig.add_trace(go.Bar(
-                x=df_grouped['fecha'],
-                y=df_grouped['Exportado_kWh'],
+                x=df_12m['mes_num'],
+                y=df_12m['Exportado_kWh'],
                 name='Exportación (kWh)',
                 marker_color='#3498db',
-                text=df_grouped['Exportado_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
+                text=df_12m['Exportado_kWh'].apply(lambda v: f"{v:.1f}" if v > 0 else ""),
                 textposition='outside',
-                hovertemplate='<b>Fecha:</b> %{x}<br><b>Exportado:</b> %{y:.2f} kWh<extra></extra>'
+                hovertemplate='<b>Mes %{x}</b><br>Exportado   <b>%{y:.1f}</b>  (kWh)<extra></extra>'
             ))
 
         fig.update_layout(
             barmode='group',
             template='plotly_white',
             height=430,
-            xaxis_title="Día del Mes",
+            xaxis=dict(
+                title="Mes del Año (01, 02, 03... 12)",
+                type='category',
+                tickmode='array',
+                tickvals=meses_completos,
+                ticktext=meses_completos
+            ),
             yaxis_title="kWh",
-            legend=dict(orientation="h", y=1.12, x=0)
+            legend=dict(orientation="h", y=1.12, x=0),
+            margin=dict(l=30, r=30, t=30, b=40)
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    elif tab_vista == "Año":
-        st.subheader("📊 Consumo Anual por Meses (kWh)")
+    else:  # Año o Total
+        st.subheader("📊 Consumo Acumulado por Años (2026, 2027...)")
         
-        df_grouped = df_all.groupby('mes').agg({
+        df_all['anio_str'] = pd.to_datetime(df_all['timestamp']).dt.strftime('%Y')
+        df_grouped_y = df_all.groupby('anio_str').agg({
             'consumo_intervalo_wh': 'sum',
             'exportado_intervalo_wh': 'sum'
         }).reset_index()
-        df_grouped['Consumo_kWh'] = df_grouped['consumo_intervalo_wh'] / 1000.0
-        df_grouped['Exportado_kWh'] = df_grouped['exportado_intervalo_wh'] / 1000.0
-
-        fig = go.Figure()
-        fig.add_trace(go.Bar(
-            x=df_grouped['mes'],
-            y=df_grouped['Consumo_kWh'],
-            name='Consumo (kWh)',
-            marker_color='#8e44ad',
-            text=df_grouped['Consumo_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
-            textposition='outside',
-            hovertemplate='<b>Mes:</b> %{x}<br><b>Consumo:</b> %{y:.2f} kWh<extra></extra>'
-        ))
-        if df_grouped['Exportado_kWh'].sum() > 0:
-            fig.add_trace(go.Bar(
-                x=df_grouped['mes'],
-                y=df_grouped['Exportado_kWh'],
-                name='Exportación (kWh)',
-                marker_color='#3498db',
-                text=df_grouped['Exportado_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
-                textposition='outside',
-                hovertemplate='<b>Mes:</b> %{x}<br><b>Exportado:</b> %{y:.2f} kWh<extra></extra>'
-            ))
-
-        fig.update_layout(
-            barmode='group',
-            template='plotly_white',
-            height=430,
-            xaxis_title="Mes",
-            yaxis_title="kWh",
-            legend=dict(orientation="h", y=1.12, x=0)
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    else:  # Total
-        st.subheader("🌐 Resumen Total Acumulado")
         
-        df_grouped = df_all.groupby('anio').agg({
-            'consumo_intervalo_wh': 'sum',
-            'exportado_intervalo_wh': 'sum'
-        }).reset_index()
-        df_grouped['Consumo_kWh'] = df_grouped['consumo_intervalo_wh'] / 1000.0
-        df_grouped['Exportado_kWh'] = df_grouped['exportado_intervalo_wh'] / 1000.0
+        df_grouped_y['Consumo_kWh'] = df_grouped_y['consumo_intervalo_wh'] / 1000.0
+        df_grouped_y['Exportado_kWh'] = df_grouped_y['exportado_intervalo_wh'] / 1000.0
 
         fig = go.Figure()
         fig.add_trace(go.Bar(
-            x=df_grouped['anio'],
-            y=df_grouped['Consumo_kWh'],
+            x=df_grouped_y['anio_str'],
+            y=df_grouped_y['Consumo_kWh'],
             name='Consumo Total (kWh)',
-            marker_color='#8e44ad',
-            text=df_grouped['Consumo_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
+            marker_color='#5c82ff',
+            marker_line_color='#3b82f6',
+            marker_line_width=1,
+            text=df_grouped_y['Consumo_kWh'].apply(lambda v: f"{v:.1f}" if v > 0 else ""),
             textposition='outside',
-            hovertemplate='<b>Año:</b> %{x}<br><b>Consumo Total:</b> %{y:.2f} kWh<extra></extra>'
+            hovertemplate='<b>Año %{x}</b><br>2026   <b>%{y:.1f}</b>  (kWh)<extra></extra>'
         ))
-        if df_grouped['Exportado_kWh'].sum() > 0:
+        
+        if df_grouped_y['Exportado_kWh'].sum() > 0:
             fig.add_trace(go.Bar(
-                x=df_grouped['anio'],
-                y=df_grouped['Exportado_kWh'],
+                x=df_grouped_y['anio_str'],
+                y=df_grouped_y['Exportado_kWh'],
                 name='Exportado Total (kWh)',
                 marker_color='#3498db',
-                text=df_grouped['Exportado_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
+                text=df_grouped_y['Exportado_kWh'].apply(lambda v: f"{v:.1f}" if v > 0 else ""),
                 textposition='outside',
-                hovertemplate='<b>Año:</b> %{x}<br><b>Exportado Total:</b> %{y:.2f} kWh<extra></extra>'
+                hovertemplate='<b>Año %{x}</b><br>Exportado   <b>%{y:.1f}</b>  (kWh)<extra></extra>'
             ))
 
         fig.update_layout(
             barmode='group',
             template='plotly_white',
             height=430,
-            xaxis_title="Año",
+            xaxis_title="Año (2026, 2027...)",
             yaxis_title="kWh",
-            legend=dict(orientation="h", y=1.12, x=0)
+            legend=dict(orientation="h", y=1.12, x=0),
+            margin=dict(l=30, r=30, t=30, b=40)
         )
         st.plotly_chart(fig, use_container_width=True)
 
