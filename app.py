@@ -147,7 +147,6 @@ if not st.session_state.is_admin:
 else:
     st.sidebar.markdown("<span class='role-badge-admin'>⚡ Modo Administrador Activo</span>", unsafe_allow_html=True)
     
-    # Opción para cambiar contraseña
     with st.sidebar.expander("🔑 Cambiar Contraseña"):
         pwd_actual = st.text_input("Contraseña Actual", type="password", key="pwd_actual")
         pwd_nueva = st.text_input("Nueva Contraseña", type="password", key="pwd_nueva")
@@ -577,21 +576,43 @@ if not df_all.empty:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    # --- DESCARGA DE DATOS (DISPONIBLE PARA INVITADOS Y ADMIN) ---
-    st.markdown("### 📥 Descargar Datos de Monitoreo")
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_export = df_all.drop(columns=['date_obj'], errors='ignore')
-        df_export.to_excel(writer, index=False, sheet_name='DatosOperativos')
-    excel_data = output.getvalue()
+    # --- DESCARGA DE DATOS POR RANGO DE FECHAS (INVITADO Y ADMIN) ---
+    st.markdown("### 📥 Descargar Reporte en Excel por Rango de Fechas")
+    
+    # Obtener fechas límites de los registros existentes
+    fechas_disponibles = pd.to_datetime(df_all['fecha']).dt.date
+    min_date = fechas_disponibles.min()
+    max_date = fechas_disponibles.max()
 
-    st.download_button(
-        label="📥 Descargar Reporte Completo en Excel (.xlsx)",
-        data=excel_data,
-        file_name=f"datos_operativos_medidor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary"
-    )
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        fecha_inicio = st.date_input("Fecha Inicio:", value=min_date, min_value=min_date, max_value=max_date)
+    with col_f2:
+        fecha_fin = st.date_input("Fecha Fin:", value=max_date, min_value=min_date, max_value=max_date)
+
+    if fecha_inicio > fecha_fin:
+        st.error("⚠️ La fecha de inicio debe ser menor o igual a la fecha de fin.")
+    else:
+        # Filtrar el dataframe por las fechas seleccionadas
+        mask = (fechas_disponibles >= fecha_inicio) & (fechas_disponibles <= fecha_fin)
+        df_filtrado = df_all[mask]
+
+        st.info(f"📊 Registros encontrados entre **{fecha_inicio}** y **{fecha_fin}**: **{len(df_filtrado)} registros**")
+
+        if not df_filtrado.empty:
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df_export = df_filtrado.drop(columns=['date_obj'], errors='ignore')
+                df_export.to_excel(writer, index=False, sheet_name='Reporte_Filtrado')
+            excel_data = output.getvalue()
+
+            st.download_button(
+                label=f"📥 Descargar Excel ({fecha_inicio} a {fecha_fin})",
+                data=excel_data,
+                file_name=f"reporte_medidor_{fecha_inicio}_a_{fecha_fin}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
+            )
 
     with st.expander("📋 Ver Tabla Completa de Registros"):
         st.dataframe(df_all, use_container_width=True)
