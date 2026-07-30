@@ -56,7 +56,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Estilos CSS personalizados para Dashboard Industrial y Spinner Circular de Carga Azul
+# Estilos CSS personalizados para Dashboard Industrial y Círculo de Carga Azul Grande
 st.markdown("""
 <style>
     .main-header {
@@ -126,17 +126,21 @@ st.markdown("""
         border: 1px solid #e2e8f0;
         margin-bottom: 15px;
     }
-    /* Estilo del Spinner de Carga Circular Azul */
-    .stSpinner > div {
+    /* Círculo de Carga Azul Grande Centrado */
+    div[data-testid="stSpinner"] {
+        text-align: center !important;
+        padding: 80px 0 !important;
+    }
+    div[data-testid="stSpinner"] > div {
         border-top-color: #0284c7 !important;
         border-right-color: #0369a1 !important;
         border-bottom-color: #bae6fd !important;
         border-left-color: #e0f2fe !important;
-        border-width: 6px !important;
-        width: 52px !important;
-        height: 52px !important;
+        border-width: 8px !important;
+        width: 72px !important;
+        height: 72px !important;
         border-radius: 50% !important;
-        margin: 15px auto !important;
+        margin: 20px auto !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -238,8 +242,8 @@ def calcular_consumo_periodo(sub_df, df_total):
     return round(delta_c / 1000.0, 3), round(delta_e / 1000.0, 3)
 
 def fetch_cloud_datos_fresh():
-    """Consulta la Nube omitiendo la memoria caché con 3 reintentos garantizados."""
-    for attempt in range(3):
+    """Consulta la Nube omitiendo la memoria caché con 4 reintentos garantizados."""
+    for attempt in range(4):
         try:
             fresh_url = f"{CLOUD_DB_URL}?cb={int(time.time() * 1000)}"
             headers = {
@@ -497,6 +501,34 @@ config_app = cargar_config_persistente()
 if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
 
+# =========================================================================
+# PANTALLA DE CARGA EXCLUSIVA: CÍRCULO AZUL HASTA OBTENER EL 100% DE DATOS
+# =========================================================================
+loading_container = st.empty()
+
+with loading_container.container():
+    with st.spinner("🔄 Buscando y sincronizando todos los registros en el servidor..."):
+        raw_records = cargar_datos_persistentes()
+
+        if "session_records_cache" not in st.session_state or not isinstance(st.session_state.session_records_cache, list):
+            st.session_state.session_records_cache = []
+
+        if len(raw_records) > 0:
+            st.session_state.session_records_cache = merge_datos(st.session_state.session_records_cache, raw_records)
+            raw_records = st.session_state.session_records_cache
+        else:
+            # Reintentos de emergencia hasta asegurar los registros
+            for _ in range(4):
+                time.sleep(0.3)
+                raw_records = cargar_datos_persistentes()
+                if len(raw_records) > 0:
+                    st.session_state.session_records_cache = merge_datos(st.session_state.session_records_cache, raw_records)
+                    break
+            raw_records = st.session_state.session_records_cache
+
+# VACIAR EL CÍRCULO UNA VEZ CARGADOS TODOS LOS DATOS
+loading_container.empty()
+
 # --- SIDEBAR (ACCESO, ROLES Y CONTROLES ADMIN) ---
 st.sidebar.title("🔐 Acceso y Roles")
 
@@ -610,20 +642,6 @@ with col_head2:
     st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("---")
-
-# --- CARGA Y DEPURACIÓN DE DATOS CON INDICADOR CIRCULAR Y CACHÉ INDESTRUCTIBLE ---
-with st.spinner("🔄 Buscando y sincronizando datos acumulados desde el servidor Tuya Cloud..."):
-    raw_records = cargar_datos_persistentes()
-
-# RETENCIÓN EN SESIÓN DE NAVEGADOR IMPENETRABLE
-if "session_records_cache" not in st.session_state or not isinstance(st.session_state.session_records_cache, list):
-    st.session_state.session_records_cache = []
-
-# Siempre adoptar la lista con mayor cantidad de registros
-if len(raw_records) > 0:
-    st.session_state.session_records_cache = merge_datos(st.session_state.session_records_cache, raw_records)
-else:
-    raw_records = st.session_state.session_records_cache
 
 df_all = pd.DataFrame(raw_records) if len(raw_records) > 0 else pd.DataFrame()
 
