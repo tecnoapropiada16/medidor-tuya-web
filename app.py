@@ -225,7 +225,25 @@ def calcular_consumo_periodo(sub_df, df_total):
             
     return round(delta_c / 1000.0, 3), round(delta_e / 1000.0, 3)
 
-# FUNCIONES DE PERSISTENCIA ATÓMICA CON CACHÉ DE MEMORIA AUTO-REPARABLE
+def fetch_cloud_datos_fresh():
+    """Consulta la Nube omitiendo la memoria caché del CDN mediante timestamp único."""
+    try:
+        fresh_url = f"{CLOUD_DB_URL}?cb={int(time.time() * 1000)}"
+        headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
+        res = requests.get(fresh_url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            datos_raw = res.json().get("data", {}).get("datos", [])
+            if isinstance(datos_raw, list):
+                return datos_raw
+    except Exception as e:
+        print("[NUBE GET FRESH ERROR]", e)
+    return []
+
+# FUNCIONES DE PERSISTENCIA ATÓMICA CON CACHÉ DE MEMORIA AUTO-REPARABLE Y CACHE BUSTER
 def cargar_config_persistente():
     default_config = {
         "admin_password": "admin",
@@ -262,17 +280,9 @@ def cargar_datos_persistentes():
         except Exception:
             datos_locales = []
             
-    datos_nube = []
-    try:
-        res = requests.get(CLOUD_DB_URL, timeout=4)
-        if res.status_code == 200:
-            raw_c = res.json().get("data", {}).get("datos", [])
-            if isinstance(raw_c, list):
-                datos_nube = raw_c
-    except Exception as e:
-        print("[NUBE GET ERROR]", e)
+    datos_nube = fetch_cloud_datos_fresh()
 
-    # FUSIÓN TRIPLE: Memoria Global + Disco Local + Nube (Protección total contra pérdidas)
+    # FUSIÓN TRIPLE EN TIEMPO REAL: Memoria Global + Disco Local + Nube Fresca (Sin Caché CDN)
     GLOBAL_RECORDS_CACHE = merge_datos(GLOBAL_RECORDS_CACHE, merge_datos(datos_locales, datos_nube))
     
     try:
@@ -284,20 +294,12 @@ def cargar_datos_persistentes():
     return GLOBAL_RECORDS_CACHE
 
 def guardar_datos_persistentes(nuevos_datos):
-    """SISTEMA AUTO-REPARABLE: FUSIONA Y REPARA LA NUBE SIEMPRE CON EL HISTORIAL COMPLETO ACUMULADO"""
+    """SISTEMA AUTO-REPARABLE: FUSIONA Y REPARA LA NUBE SIEMPRE CON EL HISTORIAL COMPLETO ACUMULADO Y FRESH GET"""
     global GLOBAL_RECORDS_CACHE
     
-    nube_actuales = []
-    try:
-        res = requests.get(CLOUD_DB_URL, timeout=4)
-        if res.status_code == 200:
-            datos_raw = res.json().get("data", {}).get("datos", [])
-            if isinstance(datos_raw, list):
-                nube_actuales = datos_raw
-    except Exception as e:
-        print("[NUBE GET BEFORE WRITE ERROR]", e)
+    nube_actuales = fetch_cloud_datos_fresh()
 
-    # Fusión Atómica Inviolable
+    # Fusión Atómica Inviolable en Tiempo Real
     GLOBAL_RECORDS_CACHE = merge_datos(GLOBAL_RECORDS_CACHE, merge_datos(nube_actuales, nuevos_datos))
 
     try:
@@ -306,13 +308,14 @@ def guardar_datos_persistentes(nuevos_datos):
     except Exception as e:
         print("Error guardando datos local:", e)
 
-    # Enviar el historial completo acumulado (REPARANDO la nube automáticamente)
+    # Enviar el historial completo acumulado (REPARANDO la nube automáticamente sin interferencia de caché)
     try:
         payload = {
             "name": "medidor_tuya_datos_v2",
             "data": {"datos": GLOBAL_RECORDS_CACHE}
         }
-        requests.put(CLOUD_DB_URL, json=payload, timeout=5)
+        headers = {"Content-Type": "application/json"}
+        requests.put(CLOUD_DB_URL, json=payload, headers=headers, timeout=5)
     except Exception as e:
         print("[NUBE PUT ERROR]", e)
 
@@ -335,7 +338,7 @@ def borrar_todos_los_registros():
 
 # HILO DE MONITOREO DE FONDO 24/7 (Singleton asegurado con @st.cache_resource)
 def background_tuya_worker():
-    print("[HILO FONDO AUTO-REPARABLE] Servicio activo con protección total contra pérdidas...")
+    print("[HILO FONDO AUTO-REPARABLE] Servicio activo con consulta en tiempo real sin caché...")
     while True:
         try:
             cfg = cargar_config_persistente()
@@ -432,7 +435,7 @@ def background_tuya_worker():
                         }
 
                         guardar_datos_persistentes([nuevo_registro])
-                        print(f"[HILO FONDO AUTO-REPARABLE] Registro guardado a 1 min (Total en memoria: {len(GLOBAL_RECORDS_CACHE)}): {ts_str}")
+                        print(f"[HILO FONDO OK] Registro guardado a 1 min (Total en memoria: {len(GLOBAL_RECORDS_CACHE)}): {ts_str}")
 
                 else:
                     cfg["is_online"] = False
@@ -449,7 +452,7 @@ def background_tuya_worker():
 # INICIALIZACIÓN SINGLETON: @st.cache_resource garantiza UN SOLO HILO EN TODO EL SERVIDOR
 @st.cache_resource
 def iniciar_servicio_monitoreo_singleton():
-    print("[SINGLETON PROCESS AUTO-REPARABLE] Creando servicio de monitoreo...")
+    print("[SINGLETON PROCESS] Creando servicio de monitoreo en tiempo real...")
     t = threading.Thread(target=background_tuya_worker, daemon=True)
     t.start()
     return t
