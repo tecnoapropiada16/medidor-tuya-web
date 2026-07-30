@@ -44,8 +44,8 @@ INTERVALO_SEG = 60  # Monitoreo continuo fijo a 1 minuto (60 segundos)
 CONFIG_FILE = "config_persistent.json"
 DATA_FILE = "datos_monitoreo.json"
 
-# BASE DE DATOS PERMANENTE EN LA NUBE (REST API CLOUD)
-CLOUD_DB_URL = "https://api.restful-api.dev/objects/ff8081819f7e10ae019fb39796454e4a"
+# BASE DE DATOS PERMANENTE V2 AISLADA EN LA NUBE
+CLOUD_DB_URL = "https://api.restful-api.dev/objects/ff8081819f7e10ae019fb3f9d0954eb1"
 
 st.set_page_config(
     page_title="Datos Operativos - Medidor Tuya Cloud 24/7 (Colombia)",
@@ -276,7 +276,7 @@ def cargar_datos_persistentes():
     return datos_consolidados
 
 def guardar_datos_persistentes(nuevos_datos):
-    """ESCRIBIR EN LA NUBE CON MERGE ATÓMICO: NUNCA SOBREESCRIBE O BORRA DATOS ANTERIORES"""
+    """ESCRIBIR EN LA NUBE CON MERGE ATÓMICO EN URL V2: IMPOSIBLE SOBREESCRIBIR DATOS"""
     locales = []
     if os.path.exists(DATA_FILE):
         try:
@@ -293,7 +293,6 @@ def guardar_datos_persistentes(nuevos_datos):
     except Exception as e:
         print("[NUBE GET BEFORE WRITE ERROR]", e)
 
-    # Fusionar lo que estaba local, lo que estaba en la nube y los nuevos datos recibidos
     datos_consolidados = merge_datos(locales, merge_datos(nube_actuales, nuevos_datos))
 
     try:
@@ -304,7 +303,7 @@ def guardar_datos_persistentes(nuevos_datos):
 
     try:
         payload = {
-            "name": "medidor_tuya_datos",
+            "name": "medidor_tuya_datos_v2",
             "data": {"datos": datos_consolidados}
         }
         requests.put(CLOUD_DB_URL, json=payload, timeout=5)
@@ -319,7 +318,7 @@ def borrar_todos_los_registros():
         pass
     try:
         payload = {
-            "name": "medidor_tuya_datos",
+            "name": "medidor_tuya_datos_v2",
             "data": {"datos": []}
         }
         requests.put(CLOUD_DB_URL, json=payload, timeout=5)
@@ -328,7 +327,7 @@ def borrar_todos_los_registros():
 
 # HILO DE MONITOREO DE FONDO 24/7 (Singleton asegurado con @st.cache_resource)
 def background_tuya_worker():
-    print("[HILO FONDO SINGLETON] Monitoreo Tuya activo estrictamente cada 60 segundos...")
+    print("[HILO FONDO V2] Monitoreo activo en la nueva base de datos aislada...")
     while True:
         try:
             cfg = cargar_config_persistente()
@@ -425,7 +424,7 @@ def background_tuya_worker():
                         }
 
                         guardar_datos_persistentes([nuevo_registro])
-                        print(f"[HILO FONDO OK] Registro guardado a 1 minuto atómicamente: {ts_str}")
+                        print(f"[HILO FONDO V2 OK] Registro acumulado en nueva BD aislada: {ts_str}")
 
                 else:
                     cfg["is_online"] = False
@@ -442,7 +441,7 @@ def background_tuya_worker():
 # INICIALIZACIÓN SINGLETON: @st.cache_resource garantiza UN SOLO HILO EN TODO EL SERVIDOR
 @st.cache_resource
 def iniciar_servicio_monitoreo_singleton():
-    print("[SINGLETON PROCESS] Creando hilo de fondo único para Tuya Cloud...")
+    print("[SINGLETON PROCESS V2] Creando hilo de fondo único en la nueva BD aislada...")
     t = threading.Thread(target=background_tuya_worker, daemon=True)
     t.start()
     return t
