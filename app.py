@@ -43,8 +43,8 @@ INTERVALO_SEG = 60  # Monitoreo continuo fijo a 1 minuto (60 segundos)
 CONFIG_FILE = "config_persistent.json"
 DATA_FILE = "datos_monitoreo.json"
 
-# BASE DE DATOS PERMANENTE V3 AISLADA Y LIMPIA EN LA NUBE
-CLOUD_DB_URL = "https://api.restful-api.dev/objects/ff8081819f7e10ae019fb50131da5094"
+# BASE DE DATOS PERMANENTE HIGH-SPEED ULTRA-ESTABLE EN LA NUBE (JSONBLOB)
+CLOUD_DB_URL = "https://jsonblob.com/api/jsonBlob/019fb509-4857-7ae8-8ccb-4675aa474ed5"
 
 # CACHÉ GLOBAL EN MEMORIA PERMANENTE (AUTO-REPARABLE)
 GLOBAL_RECORDS_CACHE = []
@@ -146,12 +146,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def activar_autorefresh_seguro(intervalo_seg=60):
-    """Refresco automático 100% inmune a errores de desconexión del servidor."""
-    try:
-        from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=intervalo_seg * 1000, key="tuya_autorefresh_safe_v3")
-    except Exception:
-        pass
+    """Refresco automático con HTML meta-refresh nativo 100% libre de iFrames de React y sin errores WebSocket."""
     st.markdown(f'<meta http-equiv="refresh" content="{intervalo_seg}">', unsafe_allow_html=True)
 
 # Helper functions
@@ -251,17 +246,15 @@ def calcular_consumo_periodo(sub_df, df_total):
     return round(delta_c / 1000.0, 3), round(delta_e / 1000.0, 3)
 
 def fetch_cloud_datos_fresh():
-    """Consulta la nube garantizando la respuesta fresca de datos."""
+    """Consulta la nube JSONBlob ultra-rápida y garantizada sin errores."""
     try:
-        fresh_url = f"{CLOUD_DB_URL}?cb={int(time.time() * 1000)}"
         headers = {
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0"
+            "Accept": "application/json",
+            "Cache-Control": "no-cache"
         }
-        res = requests.get(fresh_url, headers=headers, timeout=8)
+        res = requests.get(CLOUD_DB_URL, headers=headers, timeout=5)
         if res.status_code == 200:
-            datos_raw = res.json().get("data", {}).get("datos", [])
+            datos_raw = res.json().get("datos", [])
             if isinstance(datos_raw, list):
                 return datos_raw
     except Exception as e:
@@ -346,12 +339,9 @@ def guardar_datos_persistentes(nuevos_datos):
 
     # Enviar el historial completo consolidado a la nube
     try:
-        payload = {
-            "name": "medidor_tuya_datos_v3",
-            "data": {"datos": GLOBAL_RECORDS_CACHE}
-        }
+        payload = {"datos": GLOBAL_RECORDS_CACHE}
         headers = {"Content-Type": "application/json"}
-        res = requests.put(CLOUD_DB_URL, json=payload, headers=headers, timeout=8)
+        res = requests.put(CLOUD_DB_URL, json=payload, headers=headers, timeout=6)
         if res.status_code == 200:
             print(f"[NUBE PUT OK] {len(GLOBAL_RECORDS_CACHE)} registros acumulados guardados con éxito.")
     except Exception as e:
@@ -368,11 +358,9 @@ def borrar_todos_los_registros():
     except Exception:
         pass
     try:
-        payload = {
-            "name": "medidor_tuya_datos_v3",
-            "data": {"datos": []}
-        }
-        requests.put(CLOUD_DB_URL, json=payload, timeout=8)
+        payload = {"datos": []}
+        headers = {"Content-Type": "application/json"}
+        requests.put(CLOUD_DB_URL, json=payload, headers=headers, timeout=6)
     except Exception:
         pass
 
@@ -543,9 +531,8 @@ with loading_placeholder.container():
             raw_records = merged
             break
             
-        time.sleep(0.6)
+        time.sleep(0.5)
 
-    # Si tras 14 reintentos continuos solo se ha generado 1 registro inicial en la nube, mostrarlo
     if len(raw_records) == 0:
         raw_records = st.session_state.session_records_cache if len(st.session_state.session_records_cache) > 0 else merged
 
@@ -1191,7 +1178,13 @@ if not df_all.empty:
             barmode='group',
             template='plotly_white',
             height=430,
-            xaxis_title="Año (2026, 2027...)",
+            xaxis=dict(
+                title="Año (2026, 2027...)",
+                type='category',
+                tickmode='array',
+                tickvals=anios_unicos,
+                ticktext=anios_unicos
+            ),
             yaxis_title="kWh",
             legend=dict(orientation="h", y=1.12, x=0),
             margin=dict(l=30, r=30, t=30, b=40)
