@@ -56,7 +56,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Estilos CSS personalizados para Dashboard Industrial
+# Estilos CSS personalizados para Dashboard Industrial y Spinner Circular de Carga Azul
 st.markdown("""
 <style>
     .main-header {
@@ -125,6 +125,17 @@ st.markdown("""
         border-radius: 10px;
         border: 1px solid #e2e8f0;
         margin-bottom: 15px;
+    }
+    /* Estilo del Spinner de Carga Circular Azul */
+    .stSpinner > div {
+        border-top-color: #0284c7 !important;
+        border-right-color: #0369a1 !important;
+        border-bottom-color: #bae6fd !important;
+        border-left-color: #e0f2fe !important;
+        border-width: 5px !important;
+        width: 48px !important;
+        height: 48px !important;
+        border-radius: 50% !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -580,8 +591,9 @@ if config_app.get("monitoreo_activo", True):
 else:
     st.sidebar.info("⏸️ Monitoreo Pausado")
 
-# --- CARGA Y DEPURACIÓN DE DATOS CON RETENCIÓN DE NAVEGADOR IMPENETRABLE ---
-raw_records = cargar_datos_persistentes()
+# --- CARGA Y DEPURACIÓN DE DATOS CON INDICADOR CIRCULAR DE PROGRESO AZUL ---
+with st.spinner("🔄 Buscando y sincronizando datos en el servidor Tuya Cloud..."):
+    raw_records = cargar_datos_persistentes()
 
 # RETENCIÓN EN SESIÓN DE NAVEGADOR: Garantiza que la vista NUNCA caiga visualmente en parpadeos HTTP
 if "session_records_cache" not in st.session_state:
