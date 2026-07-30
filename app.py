@@ -155,6 +155,23 @@ def procesar_datos_crudos(datos_crudos):
             datos_procesados[code] = value
     return datos_procesados
 
+def depurar_duplicados_1s(datos):
+    """Filtra y elimina lecturas que tengan menos de 45 segundos entre sí."""
+    if not isinstance(datos, list) or len(datos) == 0:
+        return []
+    datos_limpios = []
+    ultimo_dt = None
+    for d in datos:
+        ts_str = d.get("timestamp")
+        try:
+            dt = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+            if ultimo_dt is None or (dt - ultimo_dt).total_seconds() >= 45:
+                datos_limpios.append(d)
+                ultimo_dt = dt
+        except Exception:
+            datos_limpios.append(d)
+    return datos_limpios
+
 # FUNCIONES DE PERSISTENCIA EN DISCO Y NUBE (CLOUD API REST)
 def cargar_config_persistente():
     default_config = {
@@ -188,9 +205,10 @@ def cargar_datos_persistentes():
         if res.status_code == 200:
             datos_cloud = res.json().get("data", {}).get("datos", [])
             if isinstance(datos_cloud, list):
+                datos_limpios = depurar_duplicados_1s(datos_cloud)
                 with open(DATA_FILE, "w", encoding="utf-8") as f:
-                    json.dump(datos_cloud, f, indent=2)
-                return datos_cloud
+                    json.dump(datos_limpios, f, indent=2)
+                return datos_limpios
     except Exception as e:
         print("[NUBE GET ERROR]", e)
 
@@ -198,22 +216,24 @@ def cargar_datos_persistentes():
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                raw_l = json.load(f)
+                return depurar_duplicados_1s(raw_l)
         except Exception:
             return []
     return []
 
 def guardar_datos_persistentes(datos):
+    datos_limpios = depurar_duplicados_1s(datos)
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(datos, f, indent=2)
+            json.dump(datos_limpios, f, indent=2)
     except Exception as e:
         print("Error guardando datos local:", e)
 
     try:
         payload = {
             "name": "medidor_tuya_datos",
-            "data": {"datos": datos}
+            "data": {"datos": datos_limpios}
         }
         requests.put(CLOUD_DB_URL, json=payload, timeout=5)
     except Exception as e:
@@ -221,7 +241,7 @@ def guardar_datos_persistentes(datos):
 
 # HILO DE MONITOREO DE FONDO 24/7 (Singleton asegurado con @st.cache_resource)
 def background_tuya_worker():
-    print("[HILO FONDO SINGLETON] Monitoreo Tuya activo cada 60 segundos...")
+    print("[HILO FONDO SINGLETON] Monitoreo Tuya activo estrictamente cada 60 segundos...")
     while True:
         try:
             cfg = cargar_config_persistente()
@@ -268,14 +288,14 @@ def background_tuya_worker():
 
                     datos_existentes = cargar_datos_persistentes()
                     
-                    # CONTROL DE DUPLICADOS: Verificar que hayan pasado al menos 45 segundos desde la última lectura
+                    # CONTROL ESTRICTO DE DUPLICADOS: Mínimo 50 segundos entre lecturas
                     permitir_nuevo_registro = True
                     if datos_existentes:
                         ultimo_ts = datos_existentes[-1].get("timestamp")
                         try:
                             ultimo_dt = datetime.strptime(ultimo_ts, "%Y-%m-%d %H:%M:%S")
                             segundos_transcurridos = (ahora_dt.replace(tzinfo=None) - ultimo_dt).total_seconds()
-                            if segundos_transcurridos < 45:
+                            if segundos_transcurridos < 50:
                                 permitir_nuevo_registro = False
                         except Exception:
                             pass
@@ -319,7 +339,7 @@ def background_tuya_worker():
 
                         datos_existentes.append(nuevo_registro)
                         guardar_datos_persistentes(datos_existentes)
-                        print(f"[HILO FONDO OK] Registro guardado 60s #{len(datos_existentes)}: {ts_str}")
+                        print(f"[HILO FONDO OK] Registro guardado a 1 minuto #{len(datos_existentes)}: {ts_str}")
 
                 else:
                     cfg["is_online"] = False
@@ -484,7 +504,6 @@ ganancia_cop = 0.0
 horas_plena_carga = 0.0
 
 if not df_all.empty:
-    # Cálculo preciso por diferencia entre primera y última lectura de energía acumulada Wh
     first_wh = df_all['energia_consumida_wh'].iloc[0]
     last_wh = df_all['energia_consumida_wh'].iloc[-1]
     
@@ -726,7 +745,6 @@ if not df_all.empty:
         df_dia_sel = df_all[df_all['fecha'] == fecha_sel_hora].copy()
         df_dia_sel['hora_str'] = pd.to_datetime(df_dia_sel['timestamp']).dt.strftime('%H')
         
-        # Calcular consumo real acumulado en kWh para cada hora slot
         horas_completas = [f"{h:02d}" for h in range(24)]
         consumo_por_hora = []
         exportado_por_hora = []
@@ -734,7 +752,6 @@ if not df_all.empty:
         for h in horas_completas:
             sub = df_dia_sel[df_dia_sel['hora_str'] == h]
             if not sub.empty:
-                # Diferencia entre última lectura Wh y primera lectura Wh de esa hora
                 min_wh = sub['energia_consumida_wh'].min()
                 max_wh = sub['energia_consumida_wh'].max()
                 delta_wh = max_wh - min_wh
