@@ -188,14 +188,13 @@ def cargar_datos_persistentes():
         if res.status_code == 200:
             datos_cloud = res.json().get("data", {}).get("datos", [])
             if isinstance(datos_cloud, list):
-                # Guardar copia local de respaldo
                 with open(DATA_FILE, "w", encoding="utf-8") as f:
                     json.dump(datos_cloud, f, indent=2)
                 return datos_cloud
     except Exception as e:
         print("[NUBE GET ERROR]", e)
 
-    # 2. Fallback a archivo local si no hay conexión
+    # 2. Fallback a archivo local
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -205,14 +204,12 @@ def cargar_datos_persistentes():
     return []
 
 def guardar_datos_persistentes(datos):
-    # 1. Guardar copia local de inmediato
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(datos, f, indent=2)
     except Exception as e:
         print("Error guardando datos local:", e)
 
-    # 2. Sincronizar inmediatamente con la Base de Datos en la Nube
     try:
         payload = {
             "name": "medidor_tuya_datos",
@@ -222,12 +219,9 @@ def guardar_datos_persistentes(datos):
     except Exception as e:
         print("[NUBE PUT ERROR]", e)
 
-# HILO DE MONITOREO DE FONDO 24/7 (Sincronización Continua a la Nube)
-if "thread_started" not in globals():
-    globals()["thread_started"] = False
-
+# HILO DE MONITOREO DE FONDO 24/7 (Singleton asegurado con @st.cache_resource)
 def background_tuya_worker():
-    print("[HILO FONDO] Servicio de monitoreo 24/7 con NUBE activo (1 min)...")
+    print("[HILO FONDO SINGLETON] Monitoreo Tuya activo cada 60 segundos...")
     while True:
         try:
             cfg = cargar_config_persistente()
@@ -273,48 +267,60 @@ def background_tuya_worker():
                             phase_values[f"P{chr(64+idx)}"] = 0.0
 
                     datos_existentes = cargar_datos_persistentes()
-                    ultima_forward = None
-                    ultima_reverse = None
+                    
+                    # CONTROL DE DUPLICADOS: Verificar que hayan pasado al menos 45 segundos desde la última lectura
+                    permitir_nuevo_registro = True
                     if datos_existentes:
-                        ultima_forward = datos_existentes[-1].get("energia_consumida_wh")
-                        ultima_reverse = datos_existentes[-1].get("energia_inyectada_wh")
+                        ultimo_ts = datos_existentes[-1].get("timestamp")
+                        try:
+                            ultimo_dt = datetime.strptime(ultimo_ts, "%Y-%m-%d %H:%M:%S")
+                            segundos_transcurridos = (ahora_dt.replace(tzinfo=None) - ultimo_dt).total_seconds()
+                            if segundos_transcurridos < 45:
+                                permitir_nuevo_registro = False
+                        except Exception:
+                            pass
 
-                    consumo_intervalo = 0.0
-                    exportado_intervalo = 0.0
-                    if ultima_forward is not None:
-                        consumo_intervalo = max(0.0, forward_wh - ultima_forward)
-                    if ultima_reverse is not None:
-                        exportado_intervalo = max(0.0, reverse_wh - ultima_reverse)
+                    if permitir_nuevo_registro:
+                        ultima_forward = datos_existentes[-1].get("energia_consumida_wh") if datos_existentes else None
+                        ultima_reverse = datos_existentes[-1].get("energia_inyectada_wh") if datos_existentes else None
 
-                    total_power = phase_values.get("PA", 0.0) + phase_values.get("PB", 0.0) + phase_values.get("PC", 0.0)
+                        consumo_intervalo = 0.0
+                        exportado_intervalo = 0.0
+                        if ultima_forward is not None:
+                            consumo_intervalo = max(0.0, forward_wh - ultima_forward)
+                        if ultima_reverse is not None:
+                            exportado_intervalo = max(0.0, reverse_wh - ultima_reverse)
 
-                    nuevo_registro = {
-                        "timestamp": ts_str,
-                        "fecha": ahora_dt.strftime("%Y-%m-%d"),
-                        "hora": ahora_dt.strftime("%H:%M:%S"),
-                        "hora_slot": ahora_dt.strftime("%H:00"),
-                        "fecha_hora_slot": ahora_dt.strftime("%Y-%m-%d %H:00"),
-                        "mes": ahora_dt.strftime("%Y-%m"),
-                        "anio": ahora_dt.strftime("%Y"),
-                        "energia_consumida_wh": round(forward_wh, 4),
-                        "energia_inyectada_wh": round(reverse_wh, 4),
-                        "consumo_intervalo_wh": round(consumo_intervalo, 4),
-                        "exportado_intervalo_wh": round(exportado_intervalo, 4),
-                        "potencia_total_w": round(total_power, 1),
-                        "Va": phase_values.get("VA", phase_values.get("Va", 0.0)),
-                        "Ia": phase_values.get("IA", phase_values.get("Ia", 0.0)),
-                        "Pa": phase_values.get("PA", phase_values.get("Pa", 0.0)),
-                        "Vb": phase_values.get("VB", phase_values.get("Vb", 0.0)),
-                        "Ib": phase_values.get("IB", phase_values.get("Ib", 0.0)),
-                        "Pb": phase_values.get("PB", phase_values.get("Pb", 0.0)),
-                        "Vc": phase_values.get("VC", phase_values.get("Vc", 0.0)),
-                        "Ic": phase_values.get("IC", phase_values.get("Ic", 0.0)),
-                        "Pc": phase_values.get("PC", phase_values.get("Pc", 0.0))
-                    }
+                        total_power = phase_values.get("PA", 0.0) + phase_values.get("PB", 0.0) + phase_values.get("PC", 0.0)
 
-                    datos_existentes.append(nuevo_registro)
-                    guardar_datos_persistentes(datos_existentes)
-                    print(f"[HILO FONDO - NUBE] Registro #{len(datos_existentes)} sincronizado en la nube: {ts_str}")
+                        nuevo_registro = {
+                            "timestamp": ts_str,
+                            "fecha": ahora_dt.strftime("%Y-%m-%d"),
+                            "hora": ahora_dt.strftime("%H:%M:%S"),
+                            "hora_slot": ahora_dt.strftime("%H:00"),
+                            "fecha_hora_slot": ahora_dt.strftime("%Y-%m-%d %H:00"),
+                            "mes": ahora_dt.strftime("%Y-%m"),
+                            "anio": ahora_dt.strftime("%Y"),
+                            "energia_consumida_wh": round(forward_wh, 4),
+                            "energia_inyectada_wh": round(reverse_wh, 4),
+                            "consumo_intervalo_wh": round(consumo_intervalo, 4),
+                            "exportado_intervalo_wh": round(exportado_intervalo, 4),
+                            "potencia_total_w": round(total_power, 1),
+                            "Va": phase_values.get("VA", phase_values.get("Va", 0.0)),
+                            "Ia": phase_values.get("IA", phase_values.get("Ia", 0.0)),
+                            "Pa": phase_values.get("PA", phase_values.get("Pa", 0.0)),
+                            "Vb": phase_values.get("VB", phase_values.get("Vb", 0.0)),
+                            "Ib": phase_values.get("IB", phase_values.get("Ib", 0.0)),
+                            "Pb": phase_values.get("PB", phase_values.get("Pb", 0.0)),
+                            "Vc": phase_values.get("VC", phase_values.get("Vc", 0.0)),
+                            "Ic": phase_values.get("IC", phase_values.get("Ic", 0.0)),
+                            "Pc": phase_values.get("PC", phase_values.get("Pc", 0.0))
+                        }
+
+                        datos_existentes.append(nuevo_registro)
+                        guardar_datos_persistentes(datos_existentes)
+                        print(f"[HILO FONDO OK] Registro guardado 60s #{len(datos_existentes)}: {ts_str}")
+
                 else:
                     cfg["is_online"] = False
                     cfg["last_online_check"] = ts_str
@@ -327,10 +333,15 @@ def background_tuya_worker():
             print("[HILO FONDO ERROR]", e)
             time.sleep(5)
 
-if not globals()["thread_started"]:
-    globals()["thread_started"] = True
+# INICIALIZACIÓN SINGLETON: @st.cache_resource garantiza UN SOLO HILO EN TODO EL SERVIDOR
+@st.cache_resource
+def iniciar_servicio_monitoreo_singleton():
+    print("[SINGLETON PROCESS] Creando hilo de fondo único para Tuya Cloud...")
     t = threading.Thread(target=background_tuya_worker, daemon=True)
     t.start()
+    return t
+
+iniciar_servicio_monitoreo_singleton()
 
 # Cargar configuración global persistente
 config_app = cargar_config_persistente()
@@ -434,7 +445,7 @@ if config_app.get("monitoreo_activo", False):
 else:
     st.sidebar.info("⏸️ Monitoreo Pausado")
 
-# --- CARGA DE DATOS DESDE NUBE / DISCO ---
+# --- CARGA Y DEPURACIÓN DE DATOS DESDE NUBE / DISCO ---
 raw_records = cargar_datos_persistentes()
 df_all = pd.DataFrame(raw_records) if len(raw_records) > 0 else pd.DataFrame()
 
@@ -473,8 +484,18 @@ ganancia_cop = 0.0
 horas_plena_carga = 0.0
 
 if not df_all.empty:
-    total_consumo_kwh = df_all['consumo_intervalo_wh'].sum() / 1000.0
-    total_exportado_kwh = df_all['exportado_intervalo_wh'].sum() / 1000.0
+    # Cálculo preciso por diferencia entre primera y última lectura de energía acumulada Wh
+    first_wh = df_all['energia_consumida_wh'].iloc[0]
+    last_wh = df_all['energia_consumida_wh'].iloc[-1]
+    
+    total_consumo_kwh = max(0.0, (last_wh - first_wh) / 1000.0)
+    if total_consumo_kwh == 0 and df_all['consumo_intervalo_wh'].sum() > 0:
+        total_consumo_kwh = df_all['consumo_intervalo_wh'].sum() / 1000.0
+        
+    first_exp = df_all['energia_inyectada_wh'].iloc[0]
+    last_exp = df_all['energia_inyectada_wh'].iloc[-1]
+    total_exportado_kwh = max(0.0, (last_exp - first_exp) / 1000.0)
+    
     total_generacion_kwh = total_consumo_kwh + total_exportado_kwh
     
     if total_generacion_kwh > 0:
@@ -684,7 +705,6 @@ st.markdown("---")
 # =========================================================================
 st.markdown("### 📊 Histórico de Consumo y Carga Electrica")
 
-# SELECCIÓN DE VISTA TEMPORAL COLOCADA DIRECTAMENTE SOBRE EL GRÁFICO
 st.markdown("<div class='chart-selector-container'>", unsafe_allow_html=True)
 tab_vista = st.radio(
     "Seleccionar Período de Tiempo:",
@@ -706,17 +726,37 @@ if not df_all.empty:
         df_dia_sel = df_all[df_all['fecha'] == fecha_sel_hora].copy()
         df_dia_sel['hora_str'] = pd.to_datetime(df_dia_sel['timestamp']).dt.strftime('%H')
         
-        df_grouped_h = df_dia_sel.groupby('hora_str').agg({
-            'consumo_intervalo_wh': 'sum',
-            'exportado_intervalo_wh': 'sum'
-        }).reset_index()
-        
+        # Calcular consumo real acumulado en kWh para cada hora slot
         horas_completas = [f"{h:02d}" for h in range(24)]
-        df_24h = pd.DataFrame({'hora_str': horas_completas})
-        df_24h = pd.merge(df_24h, df_grouped_h, on='hora_str', how='left').fillna(0.0)
+        consumo_por_hora = []
+        exportado_por_hora = []
         
-        df_24h['Consumo_kWh'] = df_24h['consumo_intervalo_wh'] / 1000.0
-        df_24h['Exportado_kWh'] = df_24h['exportado_intervalo_wh'] / 1000.0
+        for h in horas_completas:
+            sub = df_dia_sel[df_dia_sel['hora_str'] == h]
+            if not sub.empty:
+                # Diferencia entre última lectura Wh y primera lectura Wh de esa hora
+                min_wh = sub['energia_consumida_wh'].min()
+                max_wh = sub['energia_consumida_wh'].max()
+                delta_wh = max_wh - min_wh
+                if delta_wh == 0:
+                    delta_wh = sub['consumo_intervalo_wh'].sum()
+                consumo_por_hora.append(round(delta_wh / 1000.0, 3))
+                
+                min_exp = sub['energia_inyectada_wh'].min()
+                max_exp = sub['energia_inyectada_wh'].max()
+                delta_exp = max_exp - min_exp
+                if delta_exp == 0:
+                    delta_exp = sub['exportado_intervalo_wh'].sum()
+                exportado_por_hora.append(round(delta_exp / 1000.0, 3))
+            else:
+                consumo_por_hora.append(0.0)
+                exportado_por_hora.append(0.0)
+
+        df_24h = pd.DataFrame({
+            'hora_str': horas_completas,
+            'Consumo_kWh': consumo_por_hora,
+            'Exportado_kWh': exportado_por_hora
+        })
 
         fig = go.Figure()
         fig.add_trace(go.Bar(
@@ -772,17 +812,35 @@ if not df_all.empty:
         df_mes_sel = df_all[df_all['mes_str'] == mes_sel_dia].copy()
         df_mes_sel['dia_str'] = pd.to_datetime(df_mes_sel['timestamp']).dt.strftime('%d')
         
-        df_grouped_d = df_mes_sel.groupby('dia_str').agg({
-            'consumo_intervalo_wh': 'sum',
-            'exportado_intervalo_wh': 'sum'
-        }).reset_index()
-        
         dias_completos = [f"{d:02d}" for d in range(1, 32)]
-        df_31d = pd.DataFrame({'dia_str': dias_completos})
-        df_31d = pd.merge(df_31d, df_grouped_d, on='dia_str', how='left').fillna(0.0)
+        consumo_por_dia = []
+        exportado_por_dia = []
         
-        df_31d['Consumo_kWh'] = df_31d['consumo_intervalo_wh'] / 1000.0
-        df_31d['Exportado_kWh'] = df_31d['exportado_intervalo_wh'] / 1000.0
+        for d in dias_completos:
+            sub = df_mes_sel[df_mes_sel['dia_str'] == d]
+            if not sub.empty:
+                min_wh = sub['energia_consumida_wh'].min()
+                max_wh = sub['energia_consumida_wh'].max()
+                delta_wh = max_wh - min_wh
+                if delta_wh == 0:
+                    delta_wh = sub['consumo_intervalo_wh'].sum()
+                consumo_por_dia.append(round(delta_wh / 1000.0, 3))
+                
+                min_exp = sub['energia_inyectada_wh'].min()
+                max_exp = sub['energia_inyectada_wh'].max()
+                delta_exp = max_exp - min_exp
+                if delta_exp == 0:
+                    delta_exp = sub['exportado_intervalo_wh'].sum()
+                exportado_por_dia.append(round(delta_exp / 1000.0, 3))
+            else:
+                consumo_por_dia.append(0.0)
+                exportado_por_dia.append(0.0)
+
+        df_31d = pd.DataFrame({
+            'dia_str': dias_completos,
+            'Consumo_kWh': consumo_por_dia,
+            'Exportado_kWh': exportado_por_dia
+        })
         
         fig = go.Figure()
         fig.add_trace(go.Bar(
@@ -854,17 +912,35 @@ if not df_all.empty:
         df_anio_sel = df_all[df_all['anio_str'] == anio_sel_mes].copy()
         df_anio_sel['mes_num'] = pd.to_datetime(df_anio_sel['timestamp']).dt.strftime('%m')
         
-        df_grouped_m = df_anio_sel.groupby('mes_num').agg({
-            'consumo_intervalo_wh': 'sum',
-            'exportado_intervalo_wh': 'sum'
-        }).reset_index()
-        
         meses_completos = [f"{m:02d}" for m in range(1, 13)]
-        df_12m = pd.DataFrame({'mes_num': meses_completos})
-        df_12m = pd.merge(df_12m, df_grouped_m, on='mes_num', how='left').fillna(0.0)
+        consumo_por_mes = []
+        exportado_por_mes = []
         
-        df_12m['Consumo_kWh'] = df_12m['consumo_intervalo_wh'] / 1000.0
-        df_12m['Exportado_kWh'] = df_12m['exportado_intervalo_wh'] / 1000.0
+        for m in meses_completos:
+            sub = df_anio_sel[df_anio_sel['mes_num'] == m]
+            if not sub.empty:
+                min_wh = sub['energia_consumida_wh'].min()
+                max_wh = sub['energia_consumida_wh'].max()
+                delta_wh = max_wh - min_wh
+                if delta_wh == 0:
+                    delta_wh = sub['consumo_intervalo_wh'].sum()
+                consumo_por_mes.append(round(delta_wh / 1000.0, 3))
+                
+                min_exp = sub['energia_inyectada_wh'].min()
+                max_exp = sub['energia_inyectada_wh'].max()
+                delta_exp = max_exp - min_exp
+                if delta_exp == 0:
+                    delta_exp = sub['exportado_intervalo_wh'].sum()
+                exportado_por_mes.append(round(delta_exp / 1000.0, 3))
+            else:
+                consumo_por_mes.append(0.0)
+                exportado_por_mes.append(0.0)
+
+        df_12m = pd.DataFrame({
+            'mes_num': meses_completos,
+            'Consumo_kWh': consumo_por_mes,
+            'Exportado_kWh': exportado_por_mes
+        })
         
         fig = go.Figure()
         fig.add_trace(go.Bar(
@@ -911,13 +987,36 @@ if not df_all.empty:
         st.subheader("📊 Consumo Acumulado por Años (2026, 2027...)")
         
         df_all['anio_str'] = pd.to_datetime(df_all['timestamp']).dt.strftime('%Y')
-        df_grouped_y = df_all.groupby('anio_str').agg({
-            'consumo_intervalo_wh': 'sum',
-            'exportado_intervalo_wh': 'sum'
-        }).reset_index()
+        anios_unicos = sorted(df_all['anio_str'].unique())
         
-        df_grouped_y['Consumo_kWh'] = df_grouped_y['consumo_intervalo_wh'] / 1000.0
-        df_grouped_y['Exportado_kWh'] = df_grouped_y['exportado_intervalo_wh'] / 1000.0
+        consumo_por_anio = []
+        exportado_por_anio = []
+        
+        for y in anios_unicos:
+            sub = df_all[df_all['anio_str'] == y]
+            if not sub.empty:
+                min_wh = sub['energia_consumida_wh'].min()
+                max_wh = sub['energia_consumida_wh'].max()
+                delta_wh = max_wh - min_wh
+                if delta_wh == 0:
+                    delta_wh = sub['consumo_intervalo_wh'].sum()
+                consumo_por_anio.append(round(delta_wh / 1000.0, 3))
+                
+                min_exp = sub['energia_inyectada_wh'].min()
+                max_exp = sub['energia_inyectada_wh'].max()
+                delta_exp = max_exp - min_exp
+                if delta_exp == 0:
+                    delta_exp = sub['exportado_intervalo_wh'].sum()
+                exportado_por_anio.append(round(delta_exp / 1000.0, 3))
+            else:
+                consumo_por_anio.append(0.0)
+                exportado_por_anio.append(0.0)
+
+        df_grouped_y = pd.DataFrame({
+            'anio_str': anios_unicos,
+            'Consumo_kWh': consumo_por_anio,
+            'Exportado_kWh': exportado_por_anio
+        })
 
         fig = go.Figure()
         fig.add_trace(go.Bar(
