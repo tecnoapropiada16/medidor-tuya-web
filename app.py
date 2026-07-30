@@ -226,24 +226,28 @@ def calcular_consumo_periodo(sub_df, df_total):
     return round(delta_c / 1000.0, 3), round(delta_e / 1000.0, 3)
 
 def fetch_cloud_datos_fresh():
-    """Consulta la Nube omitiendo la memoria caché del CDN mediante timestamp único."""
-    try:
-        fresh_url = f"{CLOUD_DB_URL}?cb={int(time.time() * 1000)}"
-        headers = {
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0"
-        }
-        res = requests.get(fresh_url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            datos_raw = res.json().get("data", {}).get("datos", [])
-            if isinstance(datos_raw, list):
-                return datos_raw
-    except Exception as e:
-        print("[NUBE GET FRESH ERROR]", e)
+    """Consulta la Nube omitiendo la memoria caché con 3 reintentos garantizados."""
+    for attempt in range(3):
+        try:
+            fresh_url = f"{CLOUD_DB_URL}?cb={int(time.time() * 1000)}"
+            headers = {
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+            res = requests.get(fresh_url, headers=headers, timeout=6)
+            if res.status_code == 200:
+                datos_raw = res.json().get("data", {}).get("datos", [])
+                if isinstance(datos_raw, list) and len(datos_raw) > 0:
+                    return datos_raw
+                elif isinstance(datos_raw, list):
+                    return datos_raw
+        except Exception as e:
+            print(f"[NUBE GET FRESH ATTEMPT {attempt+1} ERROR]", e)
+            time.sleep(0.4)
     return []
 
-# FUNCIONES DE PERSISTENCIA ATÓMICA CON CACHÉ DE MEMORIA AUTO-REPARABLE Y CACHE BUSTER
+# FUNCIONES DE PERSISTENCIA CON PROTECCIÓN ANTI-SOBREESCRITURA Y GUARDA DE SEGURIDAD
 def cargar_config_persistente():
     default_config = {
         "admin_password": "admin",
@@ -282,7 +286,7 @@ def cargar_datos_persistentes():
             
     datos_nube = fetch_cloud_datos_fresh()
 
-    # FUSIÓN TRIPLE EN TIEMPO REAL: Memoria Global + Disco Local + Nube Fresca (Sin Caché CDN)
+    # FUSIÓN TRIPLE PERMANENTE
     GLOBAL_RECORDS_CACHE = merge_datos(GLOBAL_RECORDS_CACHE, merge_datos(datos_locales, datos_nube))
     
     try:
@@ -294,13 +298,24 @@ def cargar_datos_persistentes():
     return GLOBAL_RECORDS_CACHE
 
 def guardar_datos_persistentes(nuevos_datos):
-    """SISTEMA AUTO-REPARABLE: FUSIONA Y REPARA LA NUBE SIEMPRE CON EL HISTORIAL COMPLETO ACUMULADO Y FRESH GET"""
+    """GUARDA DE SEGURIDAD ABSOLUTA: ABORTA LA ESCRITURA SI LOS DATOS A ENVIAR SON MENORES QUE LA NUBE"""
     global GLOBAL_RECORDS_CACHE
     
     nube_actuales = fetch_cloud_datos_fresh()
 
-    # Fusión Atómica Inviolable en Tiempo Real
-    GLOBAL_RECORDS_CACHE = merge_datos(GLOBAL_RECORDS_CACHE, merge_datos(nube_actuales, nuevos_datos))
+    # Si la nube contiene más registros de los que tiene el proceso actual (arranque nuevo), adoptar la nube
+    if len(nube_actuales) > len(GLOBAL_RECORDS_CACHE):
+        GLOBAL_RECORDS_CACHE = merge_datos(GLOBAL_RECORDS_CACHE, nube_actuales)
+
+    # Fusión Atómica Inviolable
+    datos_consolidados = merge_datos(GLOBAL_RECORDS_CACHE, merge_datos(nube_actuales, nuevos_datos))
+
+    # GUARDA ANTI-REDUCCIÓN: Abortar si datos_consolidados es menor que lo que ya existía en la nube
+    if len(nube_actuales) > 0 and len(datos_consolidados) < len(nube_actuales):
+        print(f"[GUARDA DE SEGURIDAD] Abortando escritura: Nube tiene {len(nube_actuales)} y se intentaba enviar {len(datos_consolidados)}.")
+        return
+
+    GLOBAL_RECORDS_CACHE = datos_consolidados
 
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -308,14 +323,16 @@ def guardar_datos_persistentes(nuevos_datos):
     except Exception as e:
         print("Error guardando datos local:", e)
 
-    # Enviar el historial completo acumulado (REPARANDO la nube automáticamente sin interferencia de caché)
+    # Enviar el historial completo consolidado a la nube
     try:
         payload = {
             "name": "medidor_tuya_datos_v2",
             "data": {"datos": GLOBAL_RECORDS_CACHE}
         }
         headers = {"Content-Type": "application/json"}
-        requests.put(CLOUD_DB_URL, json=payload, headers=headers, timeout=5)
+        res = requests.put(CLOUD_DB_URL, json=payload, headers=headers, timeout=6)
+        if res.status_code == 200:
+            print(f"[NUBE PUT OK] {len(GLOBAL_RECORDS_CACHE)} registros acumulados guardados con éxito.")
     except Exception as e:
         print("[NUBE PUT ERROR]", e)
 
@@ -332,13 +349,13 @@ def borrar_todos_los_registros():
             "name": "medidor_tuya_datos_v2",
             "data": {"datos": []}
         }
-        requests.put(CLOUD_DB_URL, json=payload, timeout=5)
+        requests.put(CLOUD_DB_URL, json=payload, timeout=6)
     except Exception:
         pass
 
 # HILO DE MONITOREO DE FONDO 24/7 (Singleton asegurado con @st.cache_resource)
 def background_tuya_worker():
-    print("[HILO FONDO AUTO-REPARABLE] Servicio activo con consulta en tiempo real sin caché...")
+    print("[HILO FONDO PROTEGIDO] Servicio activo con guarda anti-reducción...")
     while True:
         try:
             cfg = cargar_config_persistente()
