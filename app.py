@@ -339,6 +339,8 @@ def guardar_datos_persistentes(nuevos_datos):
 def borrar_todos_los_registros():
     global GLOBAL_RECORDS_CACHE
     GLOBAL_RECORDS_CACHE = []
+    if "session_records_cache" in st.session_state:
+        st.session_state.session_records_cache = []
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump([], f, indent=2)
@@ -578,8 +580,19 @@ if config_app.get("monitoreo_activo", True):
 else:
     st.sidebar.info("⏸️ Monitoreo Pausado")
 
-# --- CARGA Y DEPURACIÓN DE DATOS DESDE NUBE / DISCO ---
+# --- CARGA Y DEPURACIÓN DE DATOS CON RETENCIÓN DE NAVEGADOR IMPENETRABLE ---
 raw_records = cargar_datos_persistentes()
+
+# RETENCIÓN EN SESIÓN DE NAVEGADOR: Garantiza que la vista NUNCA caiga visualmente en parpadeos HTTP
+if "session_records_cache" not in st.session_state:
+    st.session_state.session_records_cache = []
+
+# Siempre conservar la versión con mayor cantidad de registros vistos en esta sesión de usuario
+if len(raw_records) < len(st.session_state.session_records_cache):
+    raw_records = merge_datos(st.session_state.session_records_cache, raw_records)
+else:
+    st.session_state.session_records_cache = raw_records
+
 df_all = pd.DataFrame(raw_records) if len(raw_records) > 0 else pd.DataFrame()
 
 if not df_all.empty:
