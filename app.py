@@ -9,6 +9,7 @@ import json
 import threading
 from datetime import datetime, date, timezone, timedelta
 import io
+import requests
 import plotly.graph_objects as go
 import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
@@ -22,7 +23,7 @@ def get_colombia_now():
     return datetime.now(COLOMBIA_TZ)
 
 # ==================================================
-# CONFIGURACIÓN TUYA CLOUD & INTERVALO FIJO (1 MIN)
+# CONFIGURACIÓN TUYA CLOUD, BASE DE DATOS Y 1 MIN
 # ==================================================
 CONFIG = {
     "API_KEY": "9gpha3dftmnmgy3x4cwg",
@@ -42,6 +43,9 @@ INTERVALO_SEG = 60  # Monitoreo continuo fijo a 1 minuto (60 segundos)
 
 CONFIG_FILE = "config_persistent.json"
 DATA_FILE = "datos_monitoreo.json"
+
+# BASE DE DATOS PERMANENTE EN LA NUBE (REST API CLOUD)
+CLOUD_DB_URL = "https://api.restful-api.dev/objects/ff8081819f7e10ae019fb39796454e4a"
 
 st.set_page_config(
     page_title="Datos Operativos - Medidor Tuya Cloud 24/7 (Colombia)",
@@ -151,7 +155,7 @@ def procesar_datos_crudos(datos_crudos):
             datos_procesados[code] = value
     return datos_procesados
 
-# FUNCIONES DE PERSISTENCIA EN DISCO (JSON Y NUBE)
+# FUNCIONES DE PERSISTENCIA EN DISCO Y NUBE (CLOUD API REST)
 def cargar_config_persistente():
     default_config = {
         "admin_password": "admin",
@@ -178,6 +182,20 @@ def guardar_config_persistente(config_dict):
         print("Error guardando config:", e)
 
 def cargar_datos_persistentes():
+    # 1. Intentar cargar desde la Base de Datos Nube permanente
+    try:
+        res = requests.get(CLOUD_DB_URL, timeout=4)
+        if res.status_code == 200:
+            datos_cloud = res.json().get("data", {}).get("datos", [])
+            if isinstance(datos_cloud, list):
+                # Guardar copia local de respaldo
+                with open(DATA_FILE, "w", encoding="utf-8") as f:
+                    json.dump(datos_cloud, f, indent=2)
+                return datos_cloud
+    except Exception as e:
+        print("[NUBE GET ERROR]", e)
+
+    # 2. Fallback a archivo local si no hay conexión
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -187,18 +205,29 @@ def cargar_datos_persistentes():
     return []
 
 def guardar_datos_persistentes(datos):
+    # 1. Guardar copia local de inmediato
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(datos, f, indent=2)
     except Exception as e:
-        print("Error guardando datos:", e)
+        print("Error guardando datos local:", e)
 
-# HILO DE MONITOREO DE FONDO 24/7 (Monitoreo continuo fijo cada 1 minuto)
+    # 2. Sincronizar inmediatamente con la Base de Datos en la Nube
+    try:
+        payload = {
+            "name": "medidor_tuya_datos",
+            "data": {"datos": datos}
+        }
+        requests.put(CLOUD_DB_URL, json=payload, timeout=5)
+    except Exception as e:
+        print("[NUBE PUT ERROR]", e)
+
+# HILO DE MONITOREO DE FONDO 24/7 (Sincronización Continua a la Nube)
 if "thread_started" not in globals():
     globals()["thread_started"] = False
 
 def background_tuya_worker():
-    print("[HILO FONDO] Servicio de monitoreo 24/7 iniciado (Intervalo continuo: 1 minuto)...")
+    print("[HILO FONDO] Servicio de monitoreo 24/7 con NUBE activo (1 min)...")
     while True:
         try:
             cfg = cargar_config_persistente()
@@ -285,7 +314,7 @@ def background_tuya_worker():
 
                     datos_existentes.append(nuevo_registro)
                     guardar_datos_persistentes(datos_existentes)
-                    print(f"[HILO FONDO] Registro guardado (Intervalo 1 min) #{len(datos_existentes)}: {ts_str}")
+                    print(f"[HILO FONDO - NUBE] Registro #{len(datos_existentes)} sincronizado en la nube: {ts_str}")
                 else:
                     cfg["is_online"] = False
                     cfg["last_online_check"] = ts_str
@@ -390,13 +419,22 @@ else:
         guardar_config_persistente(config_app)
         st.rerun()
 
+# BOTÓN EXCLUSIVO DE ADMINISTRADOR: BORRAR REGISTROS EN LA NUBE
+if st.session_state.is_admin:
+    st.sidebar.markdown("---")
+    if st.sidebar.button("🗑️ Borrar Registros en la Nube", use_container_width=True, help="Vacía todos los datos almacenados en la nube permanentemente (Solo Administrador)"):
+        guardar_datos_persistentes([])
+        st.sidebar.success("¡Registros borrados en la nube exitosamente!")
+        time.sleep(1)
+        st.rerun()
+
 if config_app.get("monitoreo_activo", False):
     st.sidebar.success("🟢 Monitoreo Continuo 24/7 Activo (Cada 1 min)")
     st_autorefresh(interval=INTERVALO_SEG * 1000, key="tuya_autorefresh")
 else:
     st.sidebar.info("⏸️ Monitoreo Pausado")
 
-# --- CARGA DE DATOS DESDE DISCO ---
+# --- CARGA DE DATOS DESDE NUBE / DISCO ---
 raw_records = cargar_datos_persistentes()
 df_all = pd.DataFrame(raw_records) if len(raw_records) > 0 else pd.DataFrame()
 
