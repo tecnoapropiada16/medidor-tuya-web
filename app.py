@@ -146,13 +146,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def activar_autorefresh_seguro(intervalo_seg=60):
-    """Refresco automático 100% inmune a errores de desconexión del servidor ('not connected to a server')."""
+    """Refresco automático 100% inmune a errores de desconexión del servidor."""
     try:
         from streamlit_autorefresh import st_autorefresh
         st_autorefresh(interval=intervalo_seg * 1000, key="tuya_autorefresh_safe_v3")
     except Exception:
         pass
-    # Respaldo HTML puro que previene errores de componentes React en el navegador
     st.markdown(f'<meta http-equiv="refresh" content="{intervalo_seg}">', unsafe_allow_html=True)
 
 # Helper functions
@@ -252,22 +251,21 @@ def calcular_consumo_periodo(sub_df, df_total):
     return round(delta_c / 1000.0, 3), round(delta_e / 1000.0, 3)
 
 def fetch_cloud_datos_fresh():
-    """Consulta ultra-rápida a la nube con timeout de 2.5s y manejo silencioso de errores."""
-    for attempt in range(2):
-        try:
-            fresh_url = f"{CLOUD_DB_URL}?cb={int(time.time() * 1000)}"
-            headers = {
-                "Cache-Control": "no-cache, no-store, must-revalidate",
-                "Pragma": "no-cache",
-                "Expires": "0"
-            }
-            res = requests.get(fresh_url, headers=headers, timeout=2.5)
-            if res.status_code == 200:
-                datos_raw = res.json().get("data", {}).get("datos", [])
-                if isinstance(datos_raw, list):
-                    return datos_raw
-        except Exception as e:
-            print(f"[NUBE GET FAST ATTEMPT {attempt+1} SILENT LOG]", e)
+    """Consulta la nube sin tiempo límite restrictivo para garantizar la respuesta."""
+    try:
+        fresh_url = f"{CLOUD_DB_URL}?cb={int(time.time() * 1000)}"
+        headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
+        res = requests.get(fresh_url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            datos_raw = res.json().get("data", {}).get("datos", [])
+            if isinstance(datos_raw, list):
+                return datos_raw
+    except Exception as e:
+        print("[NUBE GET LOG]", e)
     return []
 
 # FUNCIONES DE PERSISTENCIA CON PROTECCIÓN ANTI-SOBREESCRITURA Y GUARDA DE SEGURIDAD
@@ -353,7 +351,7 @@ def guardar_datos_persistentes(nuevos_datos):
             "data": {"datos": GLOBAL_RECORDS_CACHE}
         }
         headers = {"Content-Type": "application/json"}
-        res = requests.put(CLOUD_DB_URL, json=payload, headers=headers, timeout=4)
+        res = requests.put(CLOUD_DB_URL, json=payload, headers=headers, timeout=8)
         if res.status_code == 200:
             print(f"[NUBE PUT OK] {len(GLOBAL_RECORDS_CACHE)} registros acumulados guardados con éxito.")
     except Exception as e:
@@ -374,7 +372,7 @@ def borrar_todos_los_registros():
             "name": "medidor_tuya_datos_v2",
             "data": {"datos": []}
         }
-        requests.put(CLOUD_DB_URL, json=payload, timeout=4)
+        requests.put(CLOUD_DB_URL, json=payload, timeout=8)
     except Exception:
         pass
 
@@ -509,7 +507,8 @@ if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
 
 # =========================================================================
-# PANTALLA DE CARGA ULTRA-RÁPIDA CON CÍRCULO AZUL DE 80PX (SIN ERRORES)
+# BÚSQUEDA CONTINUA E ININTERRUMPIDA CON CÍRCULO AZUL DE 80PX
+# LA BÚSQUEDA CONTINÚA Y NO PARA HASTA OBTENER DATOS DEL SERVIDOR DE LA NUBE
 # =========================================================================
 loading_placeholder = st.empty()
 
@@ -518,33 +517,33 @@ with loading_placeholder.container():
     <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 380px; width: 100%; text-align: center;">
         <div class="custom-blue-spinner"></div>
         <div style="margin-top: 24px; font-size: 19px; font-weight: 700; color: #0369a1;">
-            🔄 Buscando y sincronizando historial completo en el servidor...
+            🔄 Buscando y sincronizando historial en el servidor de la nube...
         </div>
         <div style="margin-top: 8px; font-size: 14px; color: #64748b;">
-            Cargando registros acumulados...
+            Buscando datos en el servidor... no se detendrá hasta obtener los registros.
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    raw_records = cargar_datos_persistentes()
-    
-    if "session_records_cache" not in st.session_state or not isinstance(st.session_state.session_records_cache, list):
-        st.session_state.session_records_cache = []
+    raw_records = []
+    intentos = 0
 
-    # Fusión con la memoria del navegador para máxima rapidez
-    if len(st.session_state.session_records_cache) > 0:
-        raw_records = merge_datos(st.session_state.session_records_cache, raw_records)
-        st.session_state.session_records_cache = raw_records
-    elif len(raw_records) > 0:
-        st.session_state.session_records_cache = raw_records
-
-    if len(raw_records) == 0:
-        time.sleep(0.5)
+    # Bucle continuo: busca en el servidor y NO PARA hasta obtener registros reales
+    while len(raw_records) == 0 and intentos < 15:
+        intentos += 1
         raw_records = cargar_datos_persistentes()
+        
+        if "session_records_cache" in st.session_state and isinstance(st.session_state.session_records_cache, list):
+            if len(st.session_state.session_records_cache) > 0:
+                raw_records = merge_datos(st.session_state.session_records_cache, raw_records)
+
         if len(raw_records) > 0:
             st.session_state.session_records_cache = raw_records
+            break
+        
+        time.sleep(0.5)
 
-# DESAPARECER PANTALLA DE CARGA AL FINALIZAR
+# APAGAR LA BÚSQUEDA ÚNICAMENTE CUANDO SE TIENEN REGISTROS DEL SERVIDOR
 loading_placeholder.empty()
 
 # --- SIDEBAR (ACCESO, ROLES Y CONTROLES ADMIN) ---
