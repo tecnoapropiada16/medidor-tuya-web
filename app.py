@@ -56,7 +56,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Estilos CSS personalizados para Dashboard Industrial y Círculo de Carga Azul Grande
+# Estilos CSS personalizados para Dashboard Industrial y Círculo Azul Animado de 80px Centrado
 st.markdown("""
 <style>
     .main-header {
@@ -126,21 +126,22 @@ st.markdown("""
         border: 1px solid #e2e8f0;
         margin-bottom: 15px;
     }
-    /* Círculo de Carga Azul Grande Centrado */
-    div[data-testid="stSpinner"] {
-        text-align: center !important;
-        padding: 80px 0 !important;
+    
+    /* ANIMACIÓN DEL CÍRCULO AZUL CENTRADO DE 80PX */
+    .custom-blue-spinner {
+        border: 8px solid #e0f2fe;
+        border-top: 8px solid #0284c7;
+        border-right: 8px solid #0369a1;
+        border-radius: 50%;
+        width: 80px;
+        height: 80px;
+        animation: spin-blue 1s linear infinite;
+        margin: 0 auto;
     }
-    div[data-testid="stSpinner"] > div {
-        border-top-color: #0284c7 !important;
-        border-right-color: #0369a1 !important;
-        border-bottom-color: #bae6fd !important;
-        border-left-color: #e0f2fe !important;
-        border-width: 8px !important;
-        width: 72px !important;
-        height: 72px !important;
-        border-radius: 50% !important;
-        margin: 20px auto !important;
+
+    @keyframes spin-blue {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -502,32 +503,53 @@ if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
 
 # =========================================================================
-# PANTALLA DE CARGA EXCLUSIVA: CÍRCULO AZUL HASTA OBTENER EL 100% DE DATOS
+# PANTALLA DE BÚSQUEDA EXCLUSIVA CON CÍRCULO AZUL DE 80PX CENTRADO
+# SOLO SE APAGA CUANDO SE ENCUENTRAN MÁS DE 1 REGISTRO (O TODOS)
 # =========================================================================
-loading_container = st.empty()
+loading_placeholder = st.empty()
 
-with loading_container.container():
-    with st.spinner("🔄 Buscando y sincronizando todos los registros en el servidor..."):
-        raw_records = cargar_datos_persistentes()
+with loading_placeholder.container():
+    st.markdown("""
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 380px; width: 100%; text-align: center;">
+        <div class="custom-blue-spinner"></div>
+        <div style="margin-top: 24px; font-size: 19px; font-weight: 700; color: #0369a1;">
+            🔄 Buscando y sincronizando historial completo en el servidor...
+        </div>
+        <div style="margin-top: 8px; font-size: 14px; color: #64748b;">
+            Esperando confirmación de registros acumulados (>1)...
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-        if "session_records_cache" not in st.session_state or not isinstance(st.session_state.session_records_cache, list):
-            st.session_state.session_records_cache = []
+    raw_records = cargar_datos_persistentes()
+    
+    if "session_records_cache" not in st.session_state or not isinstance(st.session_state.session_records_cache, list):
+        st.session_state.session_records_cache = []
 
-        if len(raw_records) > 0:
-            st.session_state.session_records_cache = merge_datos(st.session_state.session_records_cache, raw_records)
-            raw_records = st.session_state.session_records_cache
-        else:
-            # Reintentos de emergencia hasta asegurar los registros
-            for _ in range(4):
-                time.sleep(0.3)
-                raw_records = cargar_datos_persistentes()
-                if len(raw_records) > 0:
-                    st.session_state.session_records_cache = merge_datos(st.session_state.session_records_cache, raw_records)
-                    break
-            raw_records = st.session_state.session_records_cache
+    if len(st.session_state.session_records_cache) > 1 and len(raw_records) <= 1:
+        raw_records = st.session_state.session_records_cache
 
-# VACIAR EL CÍRCULO UNA VEZ CARGADOS TODOS LOS DATOS
-loading_container.empty()
+    # CONDICION EXACTA SOLICITADA POR EL USUARIO: La búsqueda permanece activa hasta encontrar MÁS DE 1 REGISTRO
+    intentos = 0
+    while len(raw_records) <= 1 and intentos < 10:
+        intentos += 1
+        time.sleep(0.4)
+        nube_reintento = fetch_cloud_datos_fresh()
+        if len(nube_reintento) > 1:
+            raw_records = merge_datos(GLOBAL_RECORDS_CACHE, nube_reintento)
+            break
+        elif len(GLOBAL_RECORDS_CACHE) > 1:
+            raw_records = GLOBAL_RECORDS_CACHE
+            break
+
+    if len(raw_records) > 1:
+        st.session_state.session_records_cache = merge_datos(st.session_state.session_records_cache, raw_records)
+        raw_records = st.session_state.session_records_cache
+    elif len(st.session_state.session_records_cache) > 1:
+        raw_records = st.session_state.session_records_cache
+
+# APAGAR PANTALLA DE BÚSQUEDA SOLO CUANDO TENGAMOS MÁS DE 1 REGISTRO
+loading_placeholder.empty()
 
 # --- SIDEBAR (ACCESO, ROLES Y CONTROLES ADMIN) ---
 st.sidebar.title("🔐 Acceso y Roles")
@@ -1168,7 +1190,13 @@ if not df_all.empty:
             barmode='group',
             template='plotly_white',
             height=430,
-            xaxis_title="Año (2026, 2027...)",
+            xaxis=dict(
+                title="Año (2026, 2027...)",
+                type='category',
+                tickmode='array',
+                tickvals=anios_unicos,
+                ticktext=anios_unicos
+            ),
             yaxis_title="kWh",
             legend=dict(orientation="h", y=1.12, x=0),
             margin=dict(l=30, r=30, t=30, b=40)
