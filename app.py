@@ -251,7 +251,7 @@ def calcular_consumo_periodo(sub_df, df_total):
     return round(delta_c / 1000.0, 3), round(delta_e / 1000.0, 3)
 
 def fetch_cloud_datos_fresh():
-    """Consulta la nube sin tiempo límite restrictivo para garantizar la respuesta."""
+    """Consulta la nube garantizando la respuesta fresca de datos."""
     try:
         fresh_url = f"{CLOUD_DB_URL}?cb={int(time.time() * 1000)}"
         headers = {
@@ -507,8 +507,8 @@ if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
 
 # =========================================================================
-# BÚSQUEDA CONTINUA ININTERRUMPIDA: EL ANILLO AZUL DE 80PX NO SE DETIENE HASTA
-# RECIBIR Y MANTENER EL HISTORIAL COMPLETO ACUMULADO
+# BÚSQUEDA CONTINUA ININTERRUMPIDA: EL ANILLO AZUL NO SE APAGA SI SOLO HAY 1 REGISTRO
+# SOLO SE APAGA SI CONFIRMA MÁS DE 1 REGISTRO (len > 1) O TRAS MÚLTIPLES REINTENTOS
 # =========================================================================
 loading_placeholder = st.empty()
 
@@ -520,7 +520,7 @@ with loading_placeholder.container():
             🔄 Sincronizando historial acumulado en el servidor de la nube...
         </div>
         <div style="margin-top: 8px; font-size: 14px; color: #64748b;">
-            Buscando datos acumulados... no se detendrá hasta confirmar la información.
+            Buscando datos acumulados... el círculo azul no se apaga si solo hay 1 registro.
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -531,27 +531,25 @@ with loading_placeholder.container():
     raw_records = []
     intentos = 0
 
-    # Bucle continuo: Sigue consultando hasta obtener datos acumulados reales
-    while intentos < 15:
+    # Bucle continuo: SOLO SE APAGA SI OBTIENE MÁS DE 1 REGISTRO (len > 1)
+    while intentos < 14:
         intentos += 1
         nube = fetch_cloud_datos_fresh()
         merged = merge_datos(st.session_state.session_records_cache, merge_datos(GLOBAL_RECORDS_CACHE, nube))
         
-        # Si la consulta entrega más datos de los que teníamos o datos válidos, adoptarlos inmediatamente
-        if len(merged) >= len(st.session_state.session_records_cache) and len(merged) > 0:
+        # EXIGIR MÁS DE 1 REGISTRO PARA APAGAR LA RUEDA AZUL
+        if len(merged) > 1:
             st.session_state.session_records_cache = merged
             raw_records = merged
             break
-        elif len(st.session_state.session_records_cache) > 0:
-            raw_records = st.session_state.session_records_cache
-            break
             
-        time.sleep(0.5)
+        time.sleep(0.6)
 
-    if len(raw_records) == 0 and len(st.session_state.session_records_cache) > 0:
-        raw_records = st.session_state.session_records_cache
+    # Si tras 14 reintentos continuos solo se ha generado 1 registro inicial en la nube, mostrarlo
+    if len(raw_records) == 0:
+        raw_records = st.session_state.session_records_cache if len(st.session_state.session_records_cache) > 0 else merged
 
-# LIMPIAR CÍRCULO AZUL SOLO CUANDO SE HAYAN DIBUJADO LOS DATOS COMPLETOS
+# LIMPIAR CÍRCULO AZUL SOLO CUANDO SE CONFIRME MÁS DE 1 REGISTRO
 loading_placeholder.empty()
 
 # --- SIDEBAR (ACCESO, ROLES Y CONTROLES ADMIN) ---
