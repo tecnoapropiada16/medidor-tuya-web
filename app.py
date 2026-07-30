@@ -25,7 +25,6 @@ MEDIDORES = {
     "Medidor Viejo (METER Aprotec)": "eb839fc51ff84a3d4bof4v"
 }
 
-ADMIN_PASSWORD = "admin"  # Contraseña por defecto del Administrador
 FORWARD_SCALE_FACTOR = 10.0
 REVERSE_SCALE_FACTOR = 10.0
 
@@ -111,6 +110,8 @@ def procesar_datos_crudos(datos_crudos):
     return datos_procesados
 
 # Session State Initialization
+if "admin_password" not in st.session_state:
+    st.session_state.admin_password = "admin"
 if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
 if "monitoreo_activo" not in st.session_state:
@@ -137,7 +138,7 @@ if not st.session_state.is_admin:
     st.sidebar.subheader("Acceso Administrador")
     pass_input = st.sidebar.text_input("Contraseña:", type="password", key="pwd_input")
     if st.sidebar.button("🔓 Iniciar Sesión Admin"):
-        if pass_input == ADMIN_PASSWORD:
+        if pass_input == st.session_state.admin_password:
             st.session_state.is_admin = True
             st.sidebar.success("¡Autenticado como Administrador!")
             st.rerun()
@@ -145,6 +146,24 @@ if not st.session_state.is_admin:
             st.sidebar.error("Contraseña incorrecta")
 else:
     st.sidebar.markdown("<span class='role-badge-admin'>⚡ Modo Administrador Activo</span>", unsafe_allow_html=True)
+    
+    # Opción para cambiar contraseña
+    with st.sidebar.expander("🔑 Cambiar Contraseña"):
+        pwd_actual = st.text_input("Contraseña Actual", type="password", key="pwd_actual")
+        pwd_nueva = st.text_input("Nueva Contraseña", type="password", key="pwd_nueva")
+        pwd_confirm = st.text_input("Confirmar Nueva Contraseña", type="password", key="pwd_confirm")
+        
+        if st.button("💾 Guardar Nueva Contraseña"):
+            if pwd_actual != st.session_state.admin_password:
+                st.error("La contraseña actual es incorrecta.")
+            elif not pwd_nueva:
+                st.error("La nueva contraseña no puede estar vacía.")
+            elif pwd_nueva != pwd_confirm:
+                st.error("Las nuevas contraseñas no coinciden.")
+            else:
+                st.session_state.admin_password = pwd_nueva
+                st.success("¡Contraseña actualizada con éxito!")
+
     if st.sidebar.button("🔒 Cerrar Sesión Admin"):
         st.session_state.is_admin = False
         st.rerun()
