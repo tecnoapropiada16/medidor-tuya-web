@@ -7,11 +7,17 @@ import time
 import os
 import json
 import threading
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 import io
 import plotly.graph_objects as go
 import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
+
+# Zona Horaria de Colombia (UTC-5)
+COLOMBIA_TZ = timezone(timedelta(hours=-5))
+
+def get_colombia_now():
+    return datetime.now(COLOMBIA_TZ)
 
 # ==================================================
 # CONFIGURACIÓN TUYA CLOUD & ARCHIVOS PERSISTENTES
@@ -35,7 +41,7 @@ CONFIG_FILE = "config_persistent.json"
 DATA_FILE = "datos_monitoreo.json"
 
 st.set_page_config(
-    page_title="Datos Operativos - Medidor Tuya Cloud 24/7",
+    page_title="Datos Operativos - Medidor Tuya Cloud 24/7 (Colombia)",
     page_icon="⚡",
     layout="wide"
 )
@@ -156,12 +162,12 @@ def guardar_datos_persistentes(datos):
     except Exception as e:
         print("Error guardando datos:", e)
 
-# HILO DE MONITOREO DE FONDO 24/7 (Corre independientemente del navegador)
+# HILO DE MONITOREO DE FONDO 24/7 (Usa horario de Colombia UTC-5)
 if "thread_started" not in globals():
     globals()["thread_started"] = False
 
 def background_tuya_worker():
-    print("[HILO FONDO] Iniciado servicio de monitoreo 24/7...")
+    print("[HILO FONDO] Iniciado servicio de monitoreo 24/7 en horario de Colombia (UTC-5)...")
     while True:
         try:
             cfg = cargar_config_persistente()
@@ -214,7 +220,8 @@ def background_tuya_worker():
                     if ultima_reverse is not None:
                         exportado_intervalo = max(0.0, reverse_wh - ultima_reverse)
 
-                    ahora_dt = datetime.now()
+                    # Timestamp en horario de Colombia (UTC-5)
+                    ahora_dt = get_colombia_now()
                     ts_str = ahora_dt.strftime("%Y-%m-%d %H:%M:%S")
                     total_power = phase_values.get("PA", 0.0) + phase_values.get("PB", 0.0) + phase_values.get("PC", 0.0)
 
@@ -222,6 +229,8 @@ def background_tuya_worker():
                         "timestamp": ts_str,
                         "fecha": ahora_dt.strftime("%Y-%m-%d"),
                         "hora": ahora_dt.strftime("%H:%M:%S"),
+                        "hora_slot": ahora_dt.strftime("%H:00"),
+                        "fecha_hora_slot": ahora_dt.strftime("%Y-%m-%d %H:00"),
                         "mes": ahora_dt.strftime("%Y-%m"),
                         "anio": ahora_dt.strftime("%Y"),
                         "energia_consumida_wh": round(forward_wh, 4),
@@ -242,7 +251,7 @@ def background_tuya_worker():
 
                     datos_existentes.append(nuevo_registro)
                     guardar_datos_persistentes(datos_existentes)
-                    print(f"[HILO FONDO] Registro guardado #{len(datos_existentes)}: {ts_str}")
+                    print(f"[HILO FONDO - COLOMBIA] Registro guardado #{len(datos_existentes)}: {ts_str}")
 
                 time.sleep(max(5, intervalo))
             else:
@@ -370,18 +379,25 @@ else:
 # --- CARGA DE DATOS DESDE DISCO ---
 raw_records = cargar_datos_persistentes()
 df_all = pd.DataFrame(raw_records) if len(raw_records) > 0 else pd.DataFrame()
-registro_actual = raw_records[-1] if len(raw_records) > 0 else None
 
-# --- ENCABEZADO Y CONTROLES SUPERIORES (DÍA / MES / AÑO / TOTAL) ---
+# Garantizar columnas de hora slot
+if not df_all.empty:
+    if "hora_slot" not in df_all.columns:
+        df_all["hora_slot"] = pd.to_datetime(df_all["timestamp"]).dt.strftime("%H:00")
+    if "fecha_hora_slot" not in df_all.columns:
+        df_all["fecha_hora_slot"] = pd.to_datetime(df_all["timestamp"]).dt.strftime("%Y-%m-%d %H:00")
+
+# --- ENCABEZADO Y CONTROLES SUPERIORES ---
 col_head1, col_head2 = st.columns([2, 3])
 
 with col_head1:
     st.markdown("<div class='main-header'>Datos Operativos</div>", unsafe_allow_html=True)
+    st.caption(f"🕒 Hora Actual Colombia (UTC-5): **{get_colombia_now().strftime('%Y-%m-%d %H:%M:%S')}**")
 
 with col_head2:
     tab_vista = st.radio(
         "",
-        ["Día", "Mes", "Año", "Total"],
+        ["Hora a Hora", "Día", "Mes", "Año", "Total"],
         horizontal=True,
         key="selected_view_mode"
     )
@@ -412,7 +428,6 @@ if not df_all.empty:
 # --- SECCIÓN: ESTADÍSTICAS DE ENERGÍA (BARRAS + TARJETAS DE MÉTRICAS) ---
 st.markdown("### Estadísticas de Energía ⚙️")
 
-# Card superior: Generación y porcentaje dividido
 st.markdown(f"""
 <div class="energy-card">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
@@ -431,7 +446,6 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# Grid de métricas en tarjetas secundarias
 m1, m2, m3, m4, m5, m6 = st.columns(6)
 
 with m1:
@@ -484,9 +498,43 @@ with m6:
 
 st.markdown("---")
 
-# --- SECCIÓN: GRÁFICOS DINÁMICOS POR PESTAÑA (DÍA, MES, AÑO, TOTAL) ---
+# --- SECCIÓN: GRÁFICOS DINÁMICOS POR PESTAÑA ---
 if not df_all.empty:
-    if tab_vista == "Día":
+    if tab_vista == "Hora a Hora":
+        st.subheader("📊 Consumo e Inyección Acumulada Hora a Hora (kWh)")
+        
+        df_grouped = df_all.groupby('fecha_hora_slot').agg({
+            'consumo_intervalo_wh': 'sum',
+            'exportado_intervalo_wh': 'sum'
+        }).reset_index()
+        df_grouped['Consumo_kWh'] = df_grouped['consumo_intervalo_wh'] / 1000.0
+        df_grouped['Exportado_kWh'] = df_grouped['exportado_intervalo_wh'] / 1000.0
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=df_grouped['fecha_hora_slot'],
+            y=df_grouped['Consumo_kWh'],
+            name='Consumo (kWh)',
+            marker_color='#8e44ad'
+        ))
+        fig.add_trace(go.Bar(
+            x=df_grouped['fecha_hora_slot'],
+            y=df_grouped['Exportado_kWh'],
+            name='Exportación (kWh)',
+            marker_color='#3498db'
+        ))
+
+        fig.update_layout(
+            barmode='group',
+            template='plotly_white',
+            height=420,
+            xaxis_title="Hora (Fecha y Hora Colombia)",
+            yaxis_title="kWh",
+            legend=dict(orientation="h", y=1.1, x=0)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    elif tab_vista == "Día":
         st.subheader("📈 Perfil de Potencia y Carga Diario (kW)")
         
         fig = go.Figure()
@@ -521,7 +569,7 @@ if not df_all.empty:
         fig.update_layout(
             template='plotly_white',
             height=420,
-            xaxis_title="Hora",
+            xaxis_title="Hora (Colombia)",
             yaxis_title="kW",
             legend=dict(orientation="h", y=1.1, x=0),
             margin=dict(l=40, r=40, t=30, b=40)
