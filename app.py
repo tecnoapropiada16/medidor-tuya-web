@@ -566,6 +566,10 @@ raw_records = cargar_datos_persistentes()
 df_all = pd.DataFrame(raw_records) if len(raw_records) > 0 else pd.DataFrame()
 
 if not df_all.empty:
+    # RECALCULAR DE FORMA EXACTA EL DELTA POR INTERVALO DE CADA FILA (Wh)
+    df_all['consumo_intervalo_wh'] = df_all['energia_consumida_wh'].diff().fillna(0).clip(lower=0)
+    df_all['exportado_intervalo_wh'] = df_all['energia_inyectada_wh'].diff().fillna(0).clip(lower=0)
+
     if "hora_slot" not in df_all.columns:
         df_all["hora_slot"] = pd.to_datetime(df_all["timestamp"]).dt.strftime("%H:00")
     if "fecha_hora_slot" not in df_all.columns:
@@ -865,9 +869,9 @@ if not df_all.empty:
             marker_color='#5c82ff',
             marker_line_color='#3b82f6',
             marker_line_width=1,
-            text=df_24h['Consumo_kWh'].apply(lambda v: f"{v:.1f}" if v > 0 else ""),
+            text=df_24h['Consumo_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
             textposition='outside',
-            hovertemplate='<b>%{x}</b><br>2026   <b>%{y:.1f}</b>  (kWh)<extra></extra>'
+            hovertemplate='<b>Hora %{x}:00</b><br>Consumo: <b>%{y:.2f} kWh</b><extra></extra>'
         ))
 
         if df_24h['Exportado_kWh'].sum() > 0:
@@ -876,9 +880,9 @@ if not df_all.empty:
                 y=df_24h['Exportado_kWh'],
                 name='Exportación (kWh)',
                 marker_color='#3498db',
-                text=df_24h['Exportado_kWh'].apply(lambda v: f"{v:.1f}" if v > 0 else ""),
+                text=df_24h['Exportado_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
                 textposition='outside',
-                hovertemplate='<b>%{x}</b><br>Exportado   <b>%{y:.1f}</b>  (kWh)<extra></extra>'
+                hovertemplate='<b>Hora %{x}:00</b><br>Exportado: <b>%{y:.2f} kWh</b><extra></extra>'
             ))
 
         fig.update_layout(
@@ -935,9 +939,9 @@ if not df_all.empty:
             marker_color='#5c82ff',
             marker_line_color='#3b82f6',
             marker_line_width=1,
-            text=df_31d['Consumo_kWh'].apply(lambda v: f"{v:.1f}" if v > 0 else ""),
+            text=df_31d['Consumo_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
             textposition='outside',
-            hovertemplate='<b>Día %{x}</b><br>2026   <b>%{y:.1f}</b>  (kWh)<extra></extra>'
+            hovertemplate='<b>Día %{x}</b><br>Consumo: <b>%{y:.2f} kWh</b><extra></extra>'
         ))
         
         if df_31d['Exportado_kWh'].sum() > 0:
@@ -946,9 +950,9 @@ if not df_all.empty:
                 y=df_31d['Exportado_kWh'],
                 name='Exportación (kWh)',
                 marker_color='#3498db',
-                text=df_31d['Exportado_kWh'].apply(lambda v: f"{v:.1f}" if v > 0 else ""),
+                text=df_31d['Exportado_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
                 textposition='outside',
-                hovertemplate='<b>Día %{x}</b><br>Exportado   <b>%{y:.1f}</b>  (kWh)<extra></extra>'
+                hovertemplate='<b>Día %{x}</b><br>Exportado: <b>%{y:.2f} kWh</b><extra></extra>'
             ))
 
         fig.update_layout(
@@ -1021,9 +1025,9 @@ if not df_all.empty:
             marker_color='#5c82ff',
             marker_line_color='#3b82f6',
             marker_line_width=1,
-            text=df_12m['Consumo_kWh'].apply(lambda v: f"{v:.1f}" if v > 0 else ""),
+            text=df_12m['Consumo_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
             textposition='outside',
-            hovertemplate='<b>Mes %{x}</b><br>2026   <b>%{y:.1f}</b>  (kWh)<extra></extra>'
+            hovertemplate='<b>Mes %{x}</b><br>Consumo: <b>%{y:.2f} kWh</b><extra></extra>'
         ))
         
         if df_12m['Exportado_kWh'].sum() > 0:
@@ -1032,9 +1036,9 @@ if not df_all.empty:
                 y=df_12m['Exportado_kWh'],
                 name='Exportación (kWh)',
                 marker_color='#3498db',
-                text=df_12m['Exportado_kWh'].apply(lambda v: f"{v:.1f}" if v > 0 else ""),
+                text=df_12m['Exportado_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
                 textposition='outside',
-                hovertemplate='<b>Mes %{x}</b><br>Exportado   <b>%{y:.1f}</b>  (kWh)<extra></extra>'
+                hovertemplate='<b>Mes %{x}</b><br>Exportado: <b>%{y:.2f} kWh</b><extra></extra>'
             ))
 
         fig.update_layout(
@@ -1083,9 +1087,9 @@ if not df_all.empty:
             marker_color='#5c82ff',
             marker_line_color='#3b82f6',
             marker_line_width=1,
-            text=df_grouped_y['Consumo_kWh'].apply(lambda v: f"{v:.1f}" if v > 0 else ""),
+            text=df_grouped_y['Consumo_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
             textposition='outside',
-            hovertemplate='<b>Año %{x}</b><br>2026   <b>%{y:.1f}</b>  (kWh)<extra></extra>'
+            hovertemplate='<b>Año %{x}</b><br>Consumo: <b>%{y:.2f} kWh</b><extra></extra>'
         ))
         
         if df_grouped_y['Exportado_kWh'].sum() > 0:
@@ -1094,9 +1098,9 @@ if not df_all.empty:
                 y=df_grouped_y['Exportado_kWh'],
                 name='Exportado Total (kWh)',
                 marker_color='#3498db',
-                text=df_grouped_y['Exportado_kWh'].apply(lambda v: f"{v:.1f}" if v > 0 else ""),
+                text=df_grouped_y['Exportado_kWh'].apply(lambda v: f"{v:.2f}" if v > 0 else ""),
                 textposition='outside',
-                hovertemplate='<b>Año %{x}</b><br>Exportado   <b>%{y:.1f}</b>  (kWh)<extra></extra>'
+                hovertemplate='<b>Año %{x}</b><br>Exportado: <b>%{y:.2f} kWh</b><extra></extra>'
             ))
 
         fig.update_layout(
