@@ -162,6 +162,8 @@ def depurar_duplicados_1s(datos):
     datos_limpios = []
     ultimo_dt = None
     for d in datos:
+        if not isinstance(d, dict):
+            continue
         ts_str = d.get("timestamp")
         try:
             dt = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
@@ -172,15 +174,63 @@ def depurar_duplicados_1s(datos):
             datos_limpios.append(d)
     return datos_limpios
 
+def merge_datos(datos_locales, datos_nube):
+    """Fusiona registros locales y de la nube por Timestamp para NUNCA perder datos."""
+    dict_merged = {}
+    if isinstance(datos_locales, list):
+        for item in datos_locales:
+            if isinstance(item, dict) and "timestamp" in item:
+                dict_merged[item["timestamp"]] = item
+    if isinstance(datos_nube, list):
+        for item in datos_nube:
+            if isinstance(item, dict) and "timestamp" in item:
+                dict_merged[item["timestamp"]] = item
+                
+    timestamps_ordenados = sorted(dict_merged.keys())
+    resultado = [dict_merged[ts] for ts in timestamps_ordenados]
+    return depurar_duplicados_1s(resultado)
+
+def calcular_consumo_periodo(sub_df, df_total):
+    """Calcula el consumo en kWh de forma precisa para cualquier subgrupo (Hora, Día, Mes, Año)."""
+    if sub_df.empty:
+        return 0.0, 0.0
+    
+    min_c = sub_df['energia_consumida_wh'].min()
+    max_c = sub_df['energia_consumida_wh'].max()
+    delta_c = max_c - min_c
+    
+    min_e = sub_df['energia_inyectada_wh'].min()
+    max_e = sub_df['energia_inyectada_wh'].max()
+    delta_e = max_e - min_e
+    
+    if delta_c == 0:
+        delta_c = sub_df['consumo_intervalo_wh'].sum()
+    if delta_e == 0:
+        delta_e = sub_df['exportado_intervalo_wh'].sum()
+        
+    if delta_c == 0 and not df_total.empty:
+        first_idx = sub_df.index[0]
+        if first_idx > 0 and (first_idx - 1) in df_total.index:
+            prev_wh = df_total.loc[first_idx - 1, 'energia_consumida_wh']
+            delta_c = max(0.0, max_c - prev_wh)
+            
+    if delta_e == 0 and not df_total.empty:
+        first_idx = sub_df.index[0]
+        if first_idx > 0 and (first_idx - 1) in df_total.index:
+            prev_exp = df_total.loc[first_idx - 1, 'energia_inyectada_wh']
+            delta_e = max(0.0, max_e - prev_exp)
+            
+    return round(delta_c / 1000.0, 3), round(delta_e / 1000.0, 3)
+
 # FUNCIONES DE PERSISTENCIA EN DISCO Y NUBE (CLOUD API REST)
 def cargar_config_persistente():
     default_config = {
         "admin_password": "admin",
-        "monitoreo_activo": False,
+        "monitoreo_activo": True,  # MONITOREO SIEMPRE ACTIVO 24/7 POR DEFECTO
         "medidor_sel": "Medidor Nuevo (Julbrainer)",
         "tarifa_cop": 850.0,
-        "is_online": False,
-        "last_online_check": "Sin lecturas recientes"
+        "is_online": True,
+        "last_online_check": "Monitoreo 24/7 Activo"
     }
     if os.path.exists(CONFIG_FILE):
         try:
@@ -199,45 +249,72 @@ def guardar_config_persistente(config_dict):
         print("Error guardando config:", e)
 
 def cargar_datos_persistentes():
-    # 1. Intentar cargar desde la Base de Datos Nube permanente
-    try:
-        res = requests.get(CLOUD_DB_URL, timeout=4)
-        if res.status_code == 200:
-            datos_cloud = res.json().get("data", {}).get("datos", [])
-            if isinstance(datos_cloud, list):
-                datos_limpios = depurar_duplicados_1s(datos_cloud)
-                with open(DATA_FILE, "w", encoding="utf-8") as f:
-                    json.dump(datos_limpios, f, indent=2)
-                return datos_limpios
-    except Exception as e:
-        print("[NUBE GET ERROR]", e)
-
-    # 2. Fallback a archivo local
+    datos_locales = []
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
-                raw_l = json.load(f)
-                return depurar_duplicados_1s(raw_l)
+                datos_locales = json.load(f)
         except Exception:
-            return []
-    return []
+            datos_locales = []
+            
+    datos_nube = []
+    try:
+        res = requests.get(CLOUD_DB_URL, timeout=4)
+        if res.status_code == 200:
+            datos_nube = res.json().get("data", {}).get("datos", [])
+    except Exception as e:
+        print("[NUBE GET ERROR]", e)
 
-def guardar_datos_persistentes(datos):
-    datos_limpios = depurar_duplicados_1s(datos)
+    datos_consolidados = merge_datos(datos_locales, datos_nube)
+    
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(datos_limpios, f, indent=2)
+            json.dump(datos_consolidados, f, indent=2)
+    except Exception:
+        pass
+
+    return datos_consolidados
+
+def guardar_datos_persistentes(datos):
+    datos_locales = []
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                datos_locales = json.load(f)
+        except Exception:
+            pass
+            
+    datos_consolidados = merge_datos(datos_locales, datos)
+
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(datos_consolidados, f, indent=2)
     except Exception as e:
         print("Error guardando datos local:", e)
 
     try:
         payload = {
             "name": "medidor_tuya_datos",
-            "data": {"datos": datos_limpios}
+            "data": {"datos": datos_consolidados}
         }
         requests.put(CLOUD_DB_URL, json=payload, timeout=5)
     except Exception as e:
         print("[NUBE PUT ERROR]", e)
+
+def borrar_todos_los_registros():
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump([], f, indent=2)
+    except Exception:
+        pass
+    try:
+        payload = {
+            "name": "medidor_tuya_datos",
+            "data": {"datos": []}
+        }
+        requests.put(CLOUD_DB_URL, json=payload, timeout=5)
+    except Exception:
+        pass
 
 # HILO DE MONITOREO DE FONDO 24/7 (Singleton asegurado con @st.cache_resource)
 def background_tuya_worker():
@@ -245,7 +322,7 @@ def background_tuya_worker():
     while True:
         try:
             cfg = cargar_config_persistente()
-            if cfg.get("monitoreo_activo", False):
+            if cfg.get("monitoreo_activo", True):
                 medidor_nombre = cfg.get("medidor_sel", "Medidor Nuevo (Julbrainer)")
                 device_id = MEDIDORES.get(medidor_nombre, list(MEDIDORES.values())[0])
 
@@ -439,13 +516,13 @@ if st.session_state.is_admin:
 st.sidebar.markdown("---")
 
 # Botones de inicio y detención
-if not config_app.get("monitoreo_activo", False):
-    if st.sidebar.button("▶️ Iniciar Monitoreo", use_container_width=True, type="primary", disabled=not st.session_state.is_admin):
+if not config_app.get("monitoreo_activo", True):
+    if st.sidebar.button("▶️ Iniciar Monitoreo", type="primary", disabled=not st.session_state.is_admin):
         config_app["monitoreo_activo"] = True
         guardar_config_persistente(config_app)
         st.rerun()
 else:
-    if st.sidebar.button("⏹️ Detener Monitoreo", use_container_width=True, type="secondary", disabled=not st.session_state.is_admin):
+    if st.sidebar.button("⏹️ Detener Monitoreo", type="secondary", disabled=not st.session_state.is_admin):
         config_app["monitoreo_activo"] = False
         guardar_config_persistente(config_app)
         st.rerun()
@@ -453,13 +530,13 @@ else:
 # BOTÓN EXCLUSIVO DE ADMINISTRADOR: BORRAR REGISTROS EN LA NUBE
 if st.session_state.is_admin:
     st.sidebar.markdown("---")
-    if st.sidebar.button("🗑️ Borrar Registros en la Nube", use_container_width=True, help="Vacía todos los datos almacenados en la nube permanentemente (Solo Administrador)"):
-        guardar_datos_persistentes([])
+    if st.sidebar.button("🗑️ Borrar Registros en la Nube", help="Vacía todos los datos almacenados en la nube permanentemente (Solo Administrador)"):
+        borrar_todos_los_registros()
         st.sidebar.success("¡Registros borrados en la nube exitosamente!")
         time.sleep(1)
         st.rerun()
 
-if config_app.get("monitoreo_activo", False):
+if config_app.get("monitoreo_activo", True):
     st.sidebar.success("🟢 Monitoreo Continuo 24/7 Activo (Cada 1 min)")
     st_autorefresh(interval=INTERVALO_SEG * 1000, key="tuya_autorefresh")
 else:
@@ -484,7 +561,7 @@ with col_head1:
 
 with col_head2:
     st.markdown("<div style='text-align: right; margin-top: 5px;'>", unsafe_allow_html=True)
-    if config_app.get("is_online", False):
+    if config_app.get("is_online", True):
         st.markdown(f"<span class='status-online'>🟢 MEDIDOR EN LÍNEA</span>", unsafe_allow_html=True)
         st.caption(f"Última verificación: {config_app.get('last_online_check', '')}")
     else:
@@ -751,23 +828,9 @@ if not df_all.empty:
         
         for h in horas_completas:
             sub = df_dia_sel[df_dia_sel['hora_str'] == h]
-            if not sub.empty:
-                min_wh = sub['energia_consumida_wh'].min()
-                max_wh = sub['energia_consumida_wh'].max()
-                delta_wh = max_wh - min_wh
-                if delta_wh == 0:
-                    delta_wh = sub['consumo_intervalo_wh'].sum()
-                consumo_por_hora.append(round(delta_wh / 1000.0, 3))
-                
-                min_exp = sub['energia_inyectada_wh'].min()
-                max_exp = sub['energia_inyectada_wh'].max()
-                delta_exp = max_exp - min_exp
-                if delta_exp == 0:
-                    delta_exp = sub['exportado_intervalo_wh'].sum()
-                exportado_por_hora.append(round(delta_exp / 1000.0, 3))
-            else:
-                consumo_por_hora.append(0.0)
-                exportado_por_hora.append(0.0)
+            c_kwh, e_kwh = calcular_consumo_periodo(sub, df_all)
+            consumo_por_hora.append(c_kwh)
+            exportado_por_hora.append(e_kwh)
 
         df_24h = pd.DataFrame({
             'hora_str': horas_completas,
@@ -835,23 +898,9 @@ if not df_all.empty:
         
         for d in dias_completos:
             sub = df_mes_sel[df_mes_sel['dia_str'] == d]
-            if not sub.empty:
-                min_wh = sub['energia_consumida_wh'].min()
-                max_wh = sub['energia_consumida_wh'].max()
-                delta_wh = max_wh - min_wh
-                if delta_wh == 0:
-                    delta_wh = sub['consumo_intervalo_wh'].sum()
-                consumo_por_dia.append(round(delta_wh / 1000.0, 3))
-                
-                min_exp = sub['energia_inyectada_wh'].min()
-                max_exp = sub['energia_inyectada_wh'].max()
-                delta_exp = max_exp - min_exp
-                if delta_exp == 0:
-                    delta_exp = sub['exportado_intervalo_wh'].sum()
-                exportado_por_dia.append(round(delta_exp / 1000.0, 3))
-            else:
-                consumo_por_dia.append(0.0)
-                exportado_por_dia.append(0.0)
+            c_kwh, e_kwh = calcular_consumo_periodo(sub, df_all)
+            consumo_por_dia.append(c_kwh)
+            exportado_por_dia.append(e_kwh)
 
         df_31d = pd.DataFrame({
             'dia_str': dias_completos,
@@ -935,23 +984,9 @@ if not df_all.empty:
         
         for m in meses_completos:
             sub = df_anio_sel[df_anio_sel['mes_num'] == m]
-            if not sub.empty:
-                min_wh = sub['energia_consumida_wh'].min()
-                max_wh = sub['energia_consumida_wh'].max()
-                delta_wh = max_wh - min_wh
-                if delta_wh == 0:
-                    delta_wh = sub['consumo_intervalo_wh'].sum()
-                consumo_por_mes.append(round(delta_wh / 1000.0, 3))
-                
-                min_exp = sub['energia_inyectada_wh'].min()
-                max_exp = sub['energia_inyectada_wh'].max()
-                delta_exp = max_exp - min_exp
-                if delta_exp == 0:
-                    delta_exp = sub['exportado_intervalo_wh'].sum()
-                exportado_por_mes.append(round(delta_exp / 1000.0, 3))
-            else:
-                consumo_por_mes.append(0.0)
-                exportado_por_mes.append(0.0)
+            c_kwh, e_kwh = calcular_consumo_periodo(sub, df_all)
+            consumo_por_mes.append(c_kwh)
+            exportado_por_mes.append(e_kwh)
 
         df_12m = pd.DataFrame({
             'mes_num': meses_completos,
@@ -1011,23 +1046,9 @@ if not df_all.empty:
         
         for y in anios_unicos:
             sub = df_all[df_all['anio_str'] == y]
-            if not sub.empty:
-                min_wh = sub['energia_consumida_wh'].min()
-                max_wh = sub['energia_consumida_wh'].max()
-                delta_wh = max_wh - min_wh
-                if delta_wh == 0:
-                    delta_wh = sub['consumo_intervalo_wh'].sum()
-                consumo_por_anio.append(round(delta_wh / 1000.0, 3))
-                
-                min_exp = sub['energia_inyectada_wh'].min()
-                max_exp = sub['energia_inyectada_wh'].max()
-                delta_exp = max_exp - min_exp
-                if delta_exp == 0:
-                    delta_exp = sub['exportado_intervalo_wh'].sum()
-                exportado_por_anio.append(round(delta_exp / 1000.0, 3))
-            else:
-                consumo_por_anio.append(0.0)
-                exportado_por_anio.append(0.0)
+            c_kwh, e_kwh = calcular_consumo_periodo(sub, df_all)
+            consumo_por_anio.append(c_kwh)
+            exportado_por_anio.append(e_kwh)
 
         df_grouped_y = pd.DataFrame({
             'anio_str': anios_unicos,
