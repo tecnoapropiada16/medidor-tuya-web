@@ -43,8 +43,8 @@ INTERVALO_SEG = 60  # Monitoreo continuo fijo a 1 minuto (60 segundos)
 CONFIG_FILE = "config_persistent.json"
 DATA_FILE = "datos_monitoreo.json"
 
-# BASE DE DATOS PERMANENTE V2 AISLADA EN LA NUBE
-CLOUD_DB_URL = "https://api.restful-api.dev/objects/ff8081819f7e10ae019fb3f9d0954eb1"
+# BASE DE DATOS PERMANENTE V3 AISLADA Y LIMPIA EN LA NUBE
+CLOUD_DB_URL = "https://api.restful-api.dev/objects/ff8081819f7e10ae019fb50131da5094"
 
 # CACHÉ GLOBAL EN MEMORIA PERMANENTE (AUTO-REPARABLE)
 GLOBAL_RECORDS_CACHE = []
@@ -259,7 +259,7 @@ def fetch_cloud_datos_fresh():
             "Pragma": "no-cache",
             "Expires": "0"
         }
-        res = requests.get(fresh_url, headers=headers, timeout=10)
+        res = requests.get(fresh_url, headers=headers, timeout=8)
         if res.status_code == 200:
             datos_raw = res.json().get("data", {}).get("datos", [])
             if isinstance(datos_raw, list):
@@ -347,7 +347,7 @@ def guardar_datos_persistentes(nuevos_datos):
     # Enviar el historial completo consolidado a la nube
     try:
         payload = {
-            "name": "medidor_tuya_datos_v2",
+            "name": "medidor_tuya_datos_v3",
             "data": {"datos": GLOBAL_RECORDS_CACHE}
         }
         headers = {"Content-Type": "application/json"}
@@ -369,7 +369,7 @@ def borrar_todos_los_registros():
         pass
     try:
         payload = {
-            "name": "medidor_tuya_datos_v2",
+            "name": "medidor_tuya_datos_v3",
             "data": {"datos": []}
         }
         requests.put(CLOUD_DB_URL, json=payload, timeout=8)
@@ -507,8 +507,8 @@ if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
 
 # =========================================================================
-# BÚSQUEDA CONTINUA E ININTERRUMPIDA CON CÍRCULO AZUL DE 80PX
-# LA BÚSQUEDA CONTINÚA Y NO PARA HASTA OBTENER DATOS DEL SERVIDOR DE LA NUBE
+# BÚSQUEDA CONTINUA ININTERRUMPIDA: EL ANILLO AZUL DE 80PX NO SE DETIENE HASTA
+# RECIBIR Y MANTENER EL HISTORIAL COMPLETO ACUMULADO
 # =========================================================================
 loading_placeholder = st.empty()
 
@@ -517,33 +517,41 @@ with loading_placeholder.container():
     <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 380px; width: 100%; text-align: center;">
         <div class="custom-blue-spinner"></div>
         <div style="margin-top: 24px; font-size: 19px; font-weight: 700; color: #0369a1;">
-            🔄 Buscando y sincronizando historial en el servidor de la nube...
+            🔄 Sincronizando historial acumulado en el servidor de la nube...
         </div>
         <div style="margin-top: 8px; font-size: 14px; color: #64748b;">
-            Buscando datos en el servidor... no se detendrá hasta obtener los registros.
+            Buscando datos acumulados... no se detendrá hasta confirmar la información.
         </div>
     </div>
     """, unsafe_allow_html=True)
 
+    if "session_records_cache" not in st.session_state or not isinstance(st.session_state.session_records_cache, list):
+        st.session_state.session_records_cache = []
+
     raw_records = []
     intentos = 0
 
-    # Bucle continuo: busca en el servidor y NO PARA hasta obtener registros reales
-    while len(raw_records) == 0 and intentos < 15:
+    # Bucle continuo: Sigue consultando hasta obtener datos acumulados reales
+    while intentos < 15:
         intentos += 1
-        raw_records = cargar_datos_persistentes()
+        nube = fetch_cloud_datos_fresh()
+        merged = merge_datos(st.session_state.session_records_cache, merge_datos(GLOBAL_RECORDS_CACHE, nube))
         
-        if "session_records_cache" in st.session_state and isinstance(st.session_state.session_records_cache, list):
-            if len(st.session_state.session_records_cache) > 0:
-                raw_records = merge_datos(st.session_state.session_records_cache, raw_records)
-
-        if len(raw_records) > 0:
-            st.session_state.session_records_cache = raw_records
+        # Si la consulta entrega más datos de los que teníamos o datos válidos, adoptarlos inmediatamente
+        if len(merged) >= len(st.session_state.session_records_cache) and len(merged) > 0:
+            st.session_state.session_records_cache = merged
+            raw_records = merged
             break
-        
+        elif len(st.session_state.session_records_cache) > 0:
+            raw_records = st.session_state.session_records_cache
+            break
+            
         time.sleep(0.5)
 
-# APAGAR LA BÚSQUEDA ÚNICAMENTE CUANDO SE TIENEN REGISTROS DEL SERVIDOR
+    if len(raw_records) == 0 and len(st.session_state.session_records_cache) > 0:
+        raw_records = st.session_state.session_records_cache
+
+# LIMPIAR CÍRCULO AZUL SOLO CUANDO SE HAYAN DIBUJADO LOS DATOS COMPLETOS
 loading_placeholder.empty()
 
 # --- SIDEBAR (ACCESO, ROLES Y CONTROLES ADMIN) ---
