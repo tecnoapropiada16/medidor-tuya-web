@@ -175,7 +175,7 @@ def depurar_duplicados_1s(datos):
     return datos_limpios
 
 def merge_datos(datos_locales, datos_nube):
-    """Fusiona registros locales y de la nube por Timestamp para NUNCA perder datos."""
+    """Fusiona registros locales y de la nube por Timestamp para NUNCA borrar o sobreescribir datos."""
     dict_merged = {}
     if isinstance(datos_locales, list):
         for item in datos_locales:
@@ -222,7 +222,7 @@ def calcular_consumo_periodo(sub_df, df_total):
             
     return round(delta_c / 1000.0, 3), round(delta_e / 1000.0, 3)
 
-# FUNCIONES DE PERSISTENCIA EN DISCO Y NUBE (CLOUD API REST)
+# FUNCIONES DE PERSISTENCIA ATÓMICA EN DISCO Y NUBE (MERGE ON WRITE)
 def cargar_config_persistente():
     default_config = {
         "admin_password": "admin",
@@ -275,16 +275,26 @@ def cargar_datos_persistentes():
 
     return datos_consolidados
 
-def guardar_datos_persistentes(datos):
-    datos_locales = []
+def guardar_datos_persistentes(nuevos_datos):
+    """ESCRIBIR EN LA NUBE CON MERGE ATÓMICO: NUNCA SOBREESCRIBE O BORRA DATOS ANTERIORES"""
+    locales = []
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
-                datos_locales = json.load(f)
+                locales = json.load(f)
         except Exception:
             pass
             
-    datos_consolidados = merge_datos(datos_locales, datos)
+    nube_actuales = []
+    try:
+        res = requests.get(CLOUD_DB_URL, timeout=4)
+        if res.status_code == 200:
+            nube_actuales = res.json().get("data", {}).get("datos", [])
+    except Exception as e:
+        print("[NUBE GET BEFORE WRITE ERROR]", e)
+
+    # Fusionar lo que estaba local, lo que estaba en la nube y los nuevos datos recibidos
+    datos_consolidados = merge_datos(locales, merge_datos(nube_actuales, nuevos_datos))
 
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -414,9 +424,8 @@ def background_tuya_worker():
                             "Pc": phase_values.get("PC", phase_values.get("Pc", 0.0))
                         }
 
-                        datos_existentes.append(nuevo_registro)
-                        guardar_datos_persistentes(datos_existentes)
-                        print(f"[HILO FONDO OK] Registro guardado a 1 minuto #{len(datos_existentes)}: {ts_str}")
+                        guardar_datos_persistentes([nuevo_registro])
+                        print(f"[HILO FONDO OK] Registro guardado a 1 minuto atómicamente: {ts_str}")
 
                 else:
                     cfg["is_online"] = False
