@@ -243,8 +243,8 @@ def calcular_consumo_periodo(sub_df, df_total):
     return round(delta_c / 1000.0, 3), round(delta_e / 1000.0, 3)
 
 def fetch_cloud_datos_fresh():
-    """Consulta la Nube omitiendo la memoria caché con 4 reintentos garantizados."""
-    for attempt in range(4):
+    """Consulta ultra-rápida a la nube con timeout de 2.5s y manejo silencioso de errores."""
+    for attempt in range(2):
         try:
             fresh_url = f"{CLOUD_DB_URL}?cb={int(time.time() * 1000)}"
             headers = {
@@ -252,16 +252,13 @@ def fetch_cloud_datos_fresh():
                 "Pragma": "no-cache",
                 "Expires": "0"
             }
-            res = requests.get(fresh_url, headers=headers, timeout=6)
+            res = requests.get(fresh_url, headers=headers, timeout=2.5)
             if res.status_code == 200:
                 datos_raw = res.json().get("data", {}).get("datos", [])
-                if isinstance(datos_raw, list) and len(datos_raw) > 0:
-                    return datos_raw
-                elif isinstance(datos_raw, list):
+                if isinstance(datos_raw, list):
                     return datos_raw
         except Exception as e:
-            print(f"[NUBE GET FRESH ATTEMPT {attempt+1} ERROR]", e)
-            time.sleep(0.3)
+            print(f"[NUBE GET FAST ATTEMPT {attempt+1} SILENT LOG]", e)
     return []
 
 # FUNCIONES DE PERSISTENCIA CON PROTECCIÓN ANTI-SOBREESCRITURA Y GUARDA DE SEGURIDAD
@@ -347,7 +344,7 @@ def guardar_datos_persistentes(nuevos_datos):
             "data": {"datos": GLOBAL_RECORDS_CACHE}
         }
         headers = {"Content-Type": "application/json"}
-        res = requests.put(CLOUD_DB_URL, json=payload, headers=headers, timeout=6)
+        res = requests.put(CLOUD_DB_URL, json=payload, headers=headers, timeout=4)
         if res.status_code == 200:
             print(f"[NUBE PUT OK] {len(GLOBAL_RECORDS_CACHE)} registros acumulados guardados con éxito.")
     except Exception as e:
@@ -368,7 +365,7 @@ def borrar_todos_los_registros():
             "name": "medidor_tuya_datos_v2",
             "data": {"datos": []}
         }
-        requests.put(CLOUD_DB_URL, json=payload, timeout=6)
+        requests.put(CLOUD_DB_URL, json=payload, timeout=4)
     except Exception:
         pass
 
@@ -503,8 +500,7 @@ if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
 
 # =========================================================================
-# PANTALLA DE BÚSQUEDA EXCLUSIVA CON CÍRCULO AZUL DE 80PX CENTRADO
-# SOLO SE APAGA CUANDO SE ENCUENTRAN MÁS DE 1 REGISTRO (O TODOS)
+# PANTALLA DE CARGA ULTRA-RÁPIDA CON CÍRCULO AZUL DE 80PX (SIN ERRORES)
 # =========================================================================
 loading_placeholder = st.empty()
 
@@ -516,39 +512,32 @@ with loading_placeholder.container():
             🔄 Buscando y sincronizando historial completo en el servidor...
         </div>
         <div style="margin-top: 8px; font-size: 14px; color: #64748b;">
-            Esperando confirmación de registros acumulados (>1)...
+            Cargando registros acumulados...
         </div>
     </div>
     """, unsafe_allow_html=True)
 
+    # Carga optimizada sin bloqueos largos
     raw_records = cargar_datos_persistentes()
     
     if "session_records_cache" not in st.session_state or not isinstance(st.session_state.session_records_cache, list):
         st.session_state.session_records_cache = []
 
-    if len(st.session_state.session_records_cache) > 1 and len(raw_records) <= 1:
-        raw_records = st.session_state.session_records_cache
+    # Fusión con la memoria del navegador para máxima rapidez
+    if len(st.session_state.session_records_cache) > 0:
+        raw_records = merge_datos(st.session_state.session_records_cache, raw_records)
+        st.session_state.session_records_cache = raw_records
+    elif len(raw_records) > 0:
+        st.session_state.session_records_cache = raw_records
 
-    # CONDICION EXACTA SOLICITADA POR EL USUARIO: La búsqueda permanece activa hasta encontrar MÁS DE 1 REGISTRO
-    intentos = 0
-    while len(raw_records) <= 1 and intentos < 10:
-        intentos += 1
-        time.sleep(0.4)
-        nube_reintento = fetch_cloud_datos_fresh()
-        if len(nube_reintento) > 1:
-            raw_records = merge_datos(GLOBAL_RECORDS_CACHE, nube_reintento)
-            break
-        elif len(GLOBAL_RECORDS_CACHE) > 1:
-            raw_records = GLOBAL_RECORDS_CACHE
-            break
+    # Reintento único de 1s solo si viniera vacuo
+    if len(raw_records) == 0:
+        time.sleep(1.0)
+        raw_records = cargar_datos_persistentes()
+        if len(raw_records) > 0:
+            st.session_state.session_records_cache = raw_records
 
-    if len(raw_records) > 1:
-        st.session_state.session_records_cache = merge_datos(st.session_state.session_records_cache, raw_records)
-        raw_records = st.session_state.session_records_cache
-    elif len(st.session_state.session_records_cache) > 1:
-        raw_records = st.session_state.session_records_cache
-
-# APAGAR PANTALLA DE BÚSQUEDA SOLO CUANDO TENGAMOS MÁS DE 1 REGISTRO
+# DESAPARECER PANTALLA DE CARGA AL FINALIZAR
 loading_placeholder.empty()
 
 # --- SIDEBAR (ACCESO, ROLES Y CONTROLES ADMIN) ---
@@ -1190,13 +1179,7 @@ if not df_all.empty:
             barmode='group',
             template='plotly_white',
             height=430,
-            xaxis=dict(
-                title="Año (2026, 2027...)",
-                type='category',
-                tickmode='array',
-                tickvals=anios_unicos,
-                ticktext=anios_unicos
-            ),
+            xaxis_title="Año (2026, 2027...)",
             yaxis_title="kWh",
             legend=dict(orientation="h", y=1.12, x=0),
             margin=dict(l=30, r=30, t=30, b=40)
