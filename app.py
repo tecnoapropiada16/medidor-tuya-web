@@ -13,14 +13,16 @@ import plotly.graph_objects as go
 import plotly.express as px
 from streamlit_autorefresh import st_autorefresh
 
-# Zona Horaria de Colombia (UTC-5)
+# ==================================================
+# CONFIGURACIÓN ZONA HORARIA COLOMBIA (UTC-5)
+# ==================================================
 COLOMBIA_TZ = timezone(timedelta(hours=-5))
 
 def get_colombia_now():
     return datetime.now(COLOMBIA_TZ)
 
 # ==================================================
-# CONFIGURACIÓN TUYA CLOUD & ARCHIVOS PERSISTENTES
+# CONFIGURACIÓN TUYA CLOUD & INTERVALO FIJO (1 MIN)
 # ==================================================
 CONFIG = {
     "API_KEY": "9gpha3dftmnmgy3x4cwg",
@@ -36,6 +38,7 @@ MEDIDORES = {
 
 FORWARD_SCALE_FACTOR = 10.0
 REVERSE_SCALE_FACTOR = 10.0
+INTERVALO_SEG = 60  # Monitoreo continuo fijo a 1 minuto (60 segundos)
 
 CONFIG_FILE = "config_persistent.json"
 DATA_FILE = "datos_monitoreo.json"
@@ -46,14 +49,34 @@ st.set_page_config(
     layout="wide"
 )
 
-# Estilos CSS personalizados
+# Estilos CSS personalizados para Dashboard Industrial
 st.markdown("""
 <style>
     .main-header {
-        font-size: 24px;
+        font-size: 26px;
         font-weight: 700;
-        color: #2c3e50;
-        margin-bottom: 15px;
+        color: #1e293b;
+        margin-bottom: 5px;
+    }
+    .status-online {
+        background-color: #dcfce7;
+        color: #166534;
+        border: 1px solid #86efac;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-size: 13px;
+        font-weight: 700;
+        display: inline-block;
+    }
+    .status-offline {
+        background-color: #fee2e2;
+        color: #991b1b;
+        border: 1px solid #fca5a5;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-size: 13px;
+        font-weight: 700;
+        display: inline-block;
     }
     .energy-card {
         background-color: #ffffff;
@@ -99,22 +122,6 @@ def safe_float(x, default=0.0):
     except Exception:
         return default
 
-def convertir_intervalo(intervalo_str):
-    """Convierte texto de intervalo libre (ej: 5s, 30s, 15m, 60m, 2h) a segundos."""
-    try:
-        s = str(intervalo_str).strip().lower()
-        if s.endswith("s"):
-            val = int(s[:-1])
-        elif s.endswith("m"):
-            val = int(s[:-1]) * 60
-        elif s.endswith("h"):
-            val = int(s[:-1]) * 3600
-        else:
-            val = int(s)
-        return max(5, val)
-    except Exception:
-        return 60
-
 def decode_phase_data(base64_string):
     try:
         decoded_bytes = base64.b64decode(base64_string)
@@ -137,15 +144,15 @@ def procesar_datos_crudos(datos_crudos):
             datos_procesados[code] = value
     return datos_procesados
 
-# FUNCIONES DE PERSISTENCIA EN DISCO (JSON)
+# FUNCIONES DE PERSISTENCIA EN DISCO (JSON Y NUBE)
 def cargar_config_persistente():
     default_config = {
         "admin_password": "admin",
         "monitoreo_activo": False,
-        "intervalo_str": "60s",
-        "intervalo_seg": 60,
         "medidor_sel": "Medidor Nuevo (Julbrainer)",
-        "tarifa_cop": 850.0
+        "tarifa_cop": 850.0,
+        "is_online": False,
+        "last_online_check": "Sin lecturas recientes"
     }
     if os.path.exists(CONFIG_FILE):
         try:
@@ -179,17 +186,16 @@ def guardar_datos_persistentes(datos):
     except Exception as e:
         print("Error guardando datos:", e)
 
-# HILO DE MONITOREO DE FONDO 24/7 (Usa horario de Colombia UTC-5)
+# HILO DE MONITOREO DE FONDO 24/7 (Monitoreo continuo fijo cada 1 minuto)
 if "thread_started" not in globals():
     globals()["thread_started"] = False
 
 def background_tuya_worker():
-    print("[HILO FONDO] Iniciado servicio de monitoreo 24/7 en horario de Colombia (UTC-5)...")
+    print("[HILO FONDO] Servicio de monitoreo 24/7 iniciado (Intervalo continuo: 1 minuto)...")
     while True:
         try:
             cfg = cargar_config_persistente()
             if cfg.get("monitoreo_activo", False):
-                intervalo = cfg.get("intervalo_seg", 60)
                 medidor_nombre = cfg.get("medidor_sel", "Medidor Nuevo (Julbrainer)")
                 device_id = MEDIDORES.get(medidor_nombre, list(MEDIDORES.values())[0])
 
@@ -200,7 +206,14 @@ def background_tuya_worker():
                     apiDeviceID=device_id
                 )
                 raw = cloud.getstatus(device_id)
+                ahora_dt = get_colombia_now()
+                ts_str = ahora_dt.strftime("%Y-%m-%d %H:%M:%S")
+
                 if raw and raw.get("success", False):
+                    cfg["is_online"] = True
+                    cfg["last_online_check"] = ts_str
+                    guardar_config_persistente(cfg)
+
                     datos_raw = procesar_datos_crudos(raw.get("result", []))
                     forward_wh = safe_float(datos_raw.get("forward_energy_total", 0)) * FORWARD_SCALE_FACTOR
                     reverse_wh = safe_float(datos_raw.get("reverse_energy_total", 0)) * REVERSE_SCALE_FACTOR
@@ -237,8 +250,6 @@ def background_tuya_worker():
                     if ultima_reverse is not None:
                         exportado_intervalo = max(0.0, reverse_wh - ultima_reverse)
 
-                    ahora_dt = get_colombia_now()
-                    ts_str = ahora_dt.strftime("%Y-%m-%d %H:%M:%S")
                     total_power = phase_values.get("PA", 0.0) + phase_values.get("PB", 0.0) + phase_values.get("PC", 0.0)
 
                     nuevo_registro = {
@@ -267,9 +278,13 @@ def background_tuya_worker():
 
                     datos_existentes.append(nuevo_registro)
                     guardar_datos_persistentes(datos_existentes)
-                    print(f"[HILO FONDO - COLOMBIA] Registro guardado #{len(datos_existentes)}: {ts_str}")
+                    print(f"[HILO FONDO] Registro guardado (Intervalo 1 min) #{len(datos_existentes)}: {ts_str}")
+                else:
+                    cfg["is_online"] = False
+                    cfg["last_online_check"] = ts_str
+                    guardar_config_persistente(cfg)
 
-                time.sleep(max(5, intervalo))
+                time.sleep(INTERVALO_SEG)
             else:
                 time.sleep(2)
         except Exception as e:
@@ -284,11 +299,11 @@ if not globals()["thread_started"]:
 # Cargar configuración global persistente
 config_app = cargar_config_persistente()
 
-# Inicializar sesión
+# Inicializar estado de administrador en sesión
 if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
 
-# --- SIDEBAR (LOGIN & ADMIN CONTROLS) ---
+# --- SIDEBAR (ACCESO, ROLES Y CONTROLES ADMIN) ---
 st.sidebar.title("🔐 Acceso y Roles")
 
 if not st.session_state.is_admin:
@@ -342,20 +357,7 @@ if medidor_sel != config_app.get("medidor_sel") and st.session_state.is_admin:
     config_app["medidor_sel"] = medidor_sel
     guardar_config_persistente(config_app)
 
-# Campo de texto libre para el intervalo (ej: 5s, 30s, 15m, 60m, 2h)
-intervalo_input = st.sidebar.text_input(
-    "Intervalo de Lectura (ej: 5s, 30s, 15m, 60m, 2h):",
-    value=config_app.get("intervalo_str", "60s"),
-    disabled=not st.session_state.is_admin
-)
-intervalo_seg = convertir_intervalo(intervalo_input)
-
-if st.session_state.is_admin and (intervalo_input != config_app.get("intervalo_str") or intervalo_seg != config_app.get("intervalo_seg")):
-    config_app["intervalo_str"] = intervalo_input
-    config_app["intervalo_seg"] = intervalo_seg
-    guardar_config_persistente(config_app)
-
-st.sidebar.caption(f"⏱️ Intervalo configurado: **{intervalo_seg} segundos** ({intervalo_input})")
+st.sidebar.caption("⏱️ Frecuencia de Lectura: **Monitoreo Continuo (1 minuto)**")
 
 if st.session_state.is_admin:
     nueva_tarifa = st.sidebar.number_input(
@@ -367,29 +369,25 @@ if st.session_state.is_admin:
         config_app["tarifa_cop"] = nueva_tarifa
         guardar_config_persistente(config_app)
 
-col_btn1, col_btn2 = st.sidebar.columns(2)
-with col_btn1:
-    if not config_app.get("monitoreo_activo", False):
-        if st.sidebar.button("▶️ Iniciar Monitoreo", use_container_width=True, type="primary", disabled=not st.session_state.is_admin):
-            config_app["monitoreo_activo"] = True
-            guardar_config_persistente(config_app)
-            st.rerun()
-    else:
-        if st.sidebar.button("⏹️ Detener Monitoreo", use_container_width=True, type="secondary", disabled=not st.session_state.is_admin):
-            config_app["monitoreo_activo"] = False
-            guardar_config_persistente(config_app)
-            st.rerun()
+st.sidebar.markdown("---")
 
-with col_btn2:
-    if st.sidebar.button("🗑️ Limpiar Datos", use_container_width=True, disabled=not st.session_state.is_admin):
-        guardar_datos_persistentes([])
+# Botones de inicio y detención (Sin botón de limpiar datos)
+if not config_app.get("monitoreo_activo", False):
+    if st.sidebar.button("▶️ Iniciar Monitoreo", use_container_width=True, type="primary", disabled=not st.session_state.is_admin):
+        config_app["monitoreo_activo"] = True
+        guardar_config_persistente(config_app)
+        st.rerun()
+else:
+    if st.sidebar.button("⏹️ Detener Monitoreo", use_container_width=True, type="secondary", disabled=not st.session_state.is_admin):
+        config_app["monitoreo_activo"] = False
+        guardar_config_persistente(config_app)
         st.rerun()
 
 if config_app.get("monitoreo_activo", False):
-    st.sidebar.success(f"🟢 Activo 24/7 ({intervalo_input} = {intervalo_seg}s)")
-    st_autorefresh(interval=intervalo_seg * 1000, key="tuya_autorefresh")
+    st.sidebar.success("🟢 Monitoreo Continuo 24/7 Activo (Cada 1 min)")
+    st_autorefresh(interval=INTERVALO_SEG * 1000, key="tuya_autorefresh")
 else:
-    st.sidebar.info("⏸️ En pausa")
+    st.sidebar.info("⏸️ Monitoreo Pausado")
 
 # --- CARGA DE DATOS DESDE DISCO ---
 raw_records = cargar_datos_persistentes()
@@ -401,24 +399,34 @@ if not df_all.empty:
     if "fecha_hora_slot" not in df_all.columns:
         df_all["fecha_hora_slot"] = pd.to_datetime(df_all["timestamp"]).dt.strftime("%Y-%m-%d %H:00")
 
-# --- ENCABEZADO Y CONTROLES SUPERIORES ---
-col_head1, col_head2 = st.columns([2, 3])
+# --- ENCABEZADO Y ESTADO DEL MEDIDOR EN LÍNEA ---
+col_head1, col_head2 = st.columns([3, 2])
 
 with col_head1:
-    st.markdown("<div class='main-header'>Datos Operativos</div>", unsafe_allow_html=True)
+    st.markdown("<div class='main-header'>⚡ Datos Operativos - Medidor Tuya Cloud</div>", unsafe_allow_html=True)
     st.caption(f"🕒 Hora Actual Colombia (UTC-5): **{get_colombia_now().strftime('%Y-%m-%d %H:%M:%S')}**")
 
 with col_head2:
-    tab_vista = st.radio(
-        "",
-        ["Hora a Hora", "Día", "Mes", "Año", "Total"],
-        horizontal=True,
-        key="selected_view_mode"
-    )
+    st.markdown("<div style='text-align: right; margin-top: 5px;'>", unsafe_allow_html=True)
+    if config_app.get("is_online", False):
+        st.markdown(f"<span class='status-online'>🟢 MEDIDOR EN LÍNEA</span>", unsafe_allow_html=True)
+        st.caption(f"Última verificación: {config_app.get('last_online_check', '')}")
+    else:
+        st.markdown(f"<span class='status-offline'>🔴 MEDIDOR DESCONECTADO / OFFLINE</span>", unsafe_allow_html=True)
+        st.caption(f"Última lectura: {config_app.get('last_online_check', 'Sin conexión')}")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# Pestañas de Vista Temporal Superior
+tab_vista = st.radio(
+    "",
+    ["Hora a Hora", "Día", "Mes", "Año", "Total"],
+    horizontal=True,
+    key="selected_view_mode"
+)
 
 st.markdown("---")
 
-# Variables para las métricas
+# Variables para las métricas globales
 total_consumo_kwh = 0.0
 total_exportado_kwh = 0.0
 total_generacion_kwh = 0.0
@@ -512,7 +520,114 @@ with m6:
 
 st.markdown("---")
 
-# --- SECCIÓN: GRÁFICOS DINÁMICOS POR PESTAÑA ---
+# --- SECCIÓN: MONITOREO DINÁMICO DE FASES (VOLTAJE Y AMPERAJE) ---
+st.markdown("### 🎛️ Monitoreo de Fases en Tiempo Real (Voltaje y Amperaje)")
+
+latest_va = df_all.iloc[-1]['Va'] if not df_all.empty and 'Va' in df_all.columns else 0.0
+latest_vb = df_all.iloc[-1]['Vb'] if not df_all.empty and 'Vb' in df_all.columns else 0.0
+latest_vc = df_all.iloc[-1]['Vc'] if not df_all.empty and 'Vc' in df_all.columns else 0.0
+
+latest_ia = df_all.iloc[-1]['Ia'] if not df_all.empty and 'Ia' in df_all.columns else 0.0
+latest_ib = df_all.iloc[-1]['Ib'] if not df_all.empty and 'Ib' in df_all.columns else 0.0
+latest_ic = df_all.iloc[-1]['Ic'] if not df_all.empty and 'Ic' in df_all.columns else 0.0
+
+# Tacómetros Dinámicos (Gauges) de Voltaje por Fase
+col_g_v1, col_g_v2, col_g_v3 = st.columns(3)
+
+def crear_gauge_voltaje(valor, titulo, color="#2563eb"):
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=valor,
+        number={'suffix': " V", 'font': {'size': 24, 'color': "#1e293b"}},
+        title={'text': titulo, 'font': {'size': 16, 'color': "#475569"}},
+        gauge={
+            'axis': {'range': [0, 300], 'tickwidth': 1, 'tickcolor': "#cbd5e1"},
+            'bar': {'color': color},
+            'bgcolor': "white",
+            'borderwidth': 2,
+            'bordercolor': "#e2e8f0",
+            'steps': [
+                {'range': [0, 100], 'color': "#f1f5f9"},
+                {'range': [100, 250], 'color': "#e2e8f0"},
+                {'range': [250, 300], 'color': "#fee2e2"}
+            ],
+            'threshold': {
+                'line': {'color': "red", 'width': 4},
+                'thickness': 0.75,
+                'value': 240
+            }
+        }
+    ))
+    fig.update_layout(height=200, margin=dict(l=20, r=20, t=30, b=10))
+    return fig
+
+with col_g_v1:
+    st.plotly_chart(crear_gauge_voltaje(latest_va, "Voltaje Fase A (Va)", "#3b82f6"), use_container_width=True)
+
+with col_g_v2:
+    st.plotly_chart(crear_gauge_voltaje(latest_vb, "Voltaje Fase B (Vb)", "#8b5cf6"), use_container_width=True)
+
+with col_g_v3:
+    st.plotly_chart(crear_gauge_voltaje(latest_vc, "Voltaje Fase C (Vc)", "#ec4899"), use_container_width=True)
+
+# Tacómetros Dinámicos (Gauges) de Amperaje / Corriente por Fase
+col_g_i1, col_g_i2, col_g_i3 = st.columns(3)
+
+def crear_gauge_amperaje(valor, titulo, color="#059669"):
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=valor,
+        number={'suffix': " A", 'font': {'size': 24, 'color': "#1e293b"}},
+        title={'text': titulo, 'font': {'size': 16, 'color': "#475569"}},
+        gauge={
+            'axis': {'range': [0, 80], 'tickwidth': 1, 'tickcolor': "#cbd5e1"},
+            'bar': {'color': color},
+            'bgcolor': "white",
+            'borderwidth': 2,
+            'bordercolor': "#e2e8f0",
+            'steps': [
+                {'range': [0, 30], 'color': "#ecfdf5"},
+                {'range': [30, 60], 'color': "#d1fae5"},
+                {'range': [60, 80], 'color': "#fef3c7"}
+            ]
+        }
+    ))
+    fig.update_layout(height=200, margin=dict(l=20, r=20, t=30, b=10))
+    return fig
+
+with col_g_i1:
+    st.plotly_chart(crear_gauge_amperaje(latest_ia, "Corriente Fase A (Ia)", "#10b981"), use_container_width=True)
+
+with col_g_i2:
+    st.plotly_chart(crear_gauge_amperaje(latest_ib, "Corriente Fase B (Ib)", "#f59e0b"), use_container_width=True)
+
+with col_g_i3:
+    st.plotly_chart(crear_gauge_amperaje(latest_ic, "Corriente Fase C (Ic)", "#6366f1"), use_container_width=True)
+
+# Gráfico Evolutivo de Cambios en Fases (Líneas de Voltaje y Amperaje en el tiempo)
+if not df_all.empty:
+    with st.expander("📈 Ver Evolución Histórica de Amperajes y Voltajes por Fase", expanded=True):
+        col_chart_v, col_chart_i = st.columns(2)
+        
+        with col_chart_v:
+            fig_v = go.Figure()
+            fig_v.add_trace(go.Scatter(x=df_all['timestamp'], y=df_all['Va'], mode='lines', name='Va (Voltios)', line=dict(color='#3b82f6')))
+            fig_v.add_trace(go.Scatter(x=df_all['timestamp'], y=df_all['Vb'], mode='lines', name='Vb (Voltios)', line=dict(color='#8b5cf6')))
+            fig_v.add_trace(go.Scatter(x=df_all['timestamp'], y=df_all['Vc'], mode='lines', name='Vc (Voltios)', line=dict(color='#ec4899')))
+            fig_v.update_layout(title="Variación de Voltajes por Fase (V)", template='plotly_white', height=300, margin=dict(l=20, r=20, t=40, b=20))
+            st.plotly_chart(fig_v, use_container_width=True)
+
+        with col_chart_i:
+            fig_i = go.Figure()
+            fig_i.add_trace(go.Scatter(x=df_all['timestamp'], y=df_all['Ia'], mode='lines', name='Ia (Amperios)', line=dict(color='#10b981')))
+            fig_i.add_trace(go.Scatter(x=df_all['timestamp'], y=df_all['Ib'], mode='lines', name='Ib (Amperios)', line=dict(color='#f59e0b')))
+            fig_i.add_trace(go.Scatter(x=df_all['timestamp'], y=df_all['Ic'], mode='lines', name='Ic (Amperios)', line=dict(color='#6366f1')))
+            fig_i.update_layout(title="Variación de Amperajes por Fase (A)", template='plotly_white', height=300, margin=dict(l=20, r=20, t=40, b=20))
+            st.plotly_chart(fig_i, use_container_width=True)
+
+st.markdown("---")
+
+# --- SECCIÓN: GRÁFICOS DINÁMICOS POR PESTAÑA TEMPORAL ---
 if not df_all.empty:
     if tab_vista == "Hora a Hora":
         st.subheader("📊 Consumo e Inyección Acumulada Hora a Hora (kWh)")
@@ -692,9 +807,11 @@ if not df_all.empty:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    # --- DESCARGA DE DATOS POR RANGO DE FECHAS (INVITADO Y ADMIN) ---
-    st.markdown("### 📥 Descargar Reporte en Excel por Rango de Fechas")
-    
+# --- SECCIÓN: DESCARGA DE DATOS EN EXCEL POR RANGO DE FECHAS (SIEMPRE VISIBLE) ---
+st.markdown("### 📥 Descargar Reporte Completo en Excel por Rango de Fechas")
+st.caption("Esta opción está disponible públicamente en todo momento (monitoreo activo o en pausa).")
+
+if not df_all.empty:
     fechas_disponibles = pd.to_datetime(df_all['fecha']).dt.date
     min_date = fechas_disponibles.min()
     max_date = fechas_disponibles.max()
@@ -729,6 +846,5 @@ if not df_all.empty:
 
     with st.expander("📋 Ver Tabla Completa de Registros"):
         st.dataframe(df_all, use_container_width=True)
-
 else:
-    st.info("Presiona '▶️ Iniciar Monitoreo' en la barra lateral (como Administrador) para comenzar la captura de datos.")
+    st.warning("⚠️ Aún no hay registros acumulados para descargar. Presiona '▶️ Iniciar Monitoreo' en la barra lateral para comenzar la recolección.")
