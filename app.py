@@ -132,10 +132,11 @@ st.markdown("""
         border-right-color: #0369a1 !important;
         border-bottom-color: #bae6fd !important;
         border-left-color: #e0f2fe !important;
-        border-width: 5px !important;
-        width: 48px !important;
-        height: 48px !important;
+        border-width: 6px !important;
+        width: 52px !important;
+        height: 52px !important;
         border-radius: 50% !important;
+        margin: 15px auto !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -255,7 +256,7 @@ def fetch_cloud_datos_fresh():
                     return datos_raw
         except Exception as e:
             print(f"[NUBE GET FRESH ATTEMPT {attempt+1} ERROR]", e)
-            time.sleep(0.4)
+            time.sleep(0.3)
     return []
 
 # FUNCIONES DE PERSISTENCIA CON PROTECCIÓN ANTI-SOBREESCRITURA Y GUARDA DE SEGURIDAD
@@ -297,7 +298,7 @@ def cargar_datos_persistentes():
             
     datos_nube = fetch_cloud_datos_fresh()
 
-    # FUSIÓN TRIPLE PERMANENTE
+    # FUSIÓN TRIPLE PERMANENTE QUE NUNCA BORRA REGISTROS ACUMULADOS
     GLOBAL_RECORDS_CACHE = merge_datos(GLOBAL_RECORDS_CACHE, merge_datos(datos_locales, datos_nube))
     
     try:
@@ -591,32 +592,6 @@ if config_app.get("monitoreo_activo", True):
 else:
     st.sidebar.info("⏸️ Monitoreo Pausado")
 
-# --- CARGA Y DEPURACIÓN DE DATOS CON INDICADOR CIRCULAR DE PROGRESO AZUL ---
-with st.spinner("🔄 Buscando y sincronizando datos en el servidor Tuya Cloud..."):
-    raw_records = cargar_datos_persistentes()
-
-# RETENCIÓN EN SESIÓN DE NAVEGADOR: Garantiza que la vista NUNCA caiga visualmente en parpadeos HTTP
-if "session_records_cache" not in st.session_state:
-    st.session_state.session_records_cache = []
-
-# Siempre conservar la versión con mayor cantidad de registros vistos en esta sesión de usuario
-if len(raw_records) < len(st.session_state.session_records_cache):
-    raw_records = merge_datos(st.session_state.session_records_cache, raw_records)
-else:
-    st.session_state.session_records_cache = raw_records
-
-df_all = pd.DataFrame(raw_records) if len(raw_records) > 0 else pd.DataFrame()
-
-if not df_all.empty:
-    # RECALCULAR DE FORMA EXACTA EL DELTA POR INTERVALO DE CADA FILA (Wh)
-    df_all['consumo_intervalo_wh'] = df_all['energia_consumida_wh'].diff().fillna(0).clip(lower=0)
-    df_all['exportado_intervalo_wh'] = df_all['energia_inyectada_wh'].diff().fillna(0).clip(lower=0)
-
-    if "hora_slot" not in df_all.columns:
-        df_all["hora_slot"] = pd.to_datetime(df_all["timestamp"]).dt.strftime("%H:00")
-    if "fecha_hora_slot" not in df_all.columns:
-        df_all["fecha_hora_slot"] = pd.to_datetime(df_all["timestamp"]).dt.strftime("%Y-%m-%d %H:00")
-
 # --- ENCABEZADO Y ESTADO DEL MEDIDOR EN LÍNEA ---
 col_head1, col_head2 = st.columns([3, 2])
 
@@ -635,6 +610,32 @@ with col_head2:
     st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("---")
+
+# --- CARGA Y DEPURACIÓN DE DATOS CON INDICADOR CIRCULAR Y CACHÉ INDESTRUCTIBLE ---
+with st.spinner("🔄 Buscando y sincronizando datos acumulados desde el servidor Tuya Cloud..."):
+    raw_records = cargar_datos_persistentes()
+
+# RETENCIÓN EN SESIÓN DE NAVEGADOR IMPENETRABLE
+if "session_records_cache" not in st.session_state or not isinstance(st.session_state.session_records_cache, list):
+    st.session_state.session_records_cache = []
+
+# Siempre adoptar la lista con mayor cantidad de registros
+if len(raw_records) > 0:
+    st.session_state.session_records_cache = merge_datos(st.session_state.session_records_cache, raw_records)
+else:
+    raw_records = st.session_state.session_records_cache
+
+df_all = pd.DataFrame(raw_records) if len(raw_records) > 0 else pd.DataFrame()
+
+if not df_all.empty:
+    # RECALCULAR DE FORMA EXACTA EL DELTA POR INTERVALO DE CADA FILA (Wh)
+    df_all['consumo_intervalo_wh'] = df_all['energia_consumida_wh'].diff().fillna(0).clip(lower=0)
+    df_all['exportado_intervalo_wh'] = df_all['energia_inyectada_wh'].diff().fillna(0).clip(lower=0)
+
+    if "hora_slot" not in df_all.columns:
+        df_all["hora_slot"] = pd.to_datetime(df_all["timestamp"]).dt.strftime("%H:00")
+    if "fecha_hora_slot" not in df_all.columns:
+        df_all["fecha_hora_slot"] = pd.to_datetime(df_all["timestamp"]).dt.strftime("%Y-%m-%d %H:00")
 
 # Variables para las métricas globales
 total_consumo_kwh = 0.0
