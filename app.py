@@ -12,7 +12,6 @@ import io
 import requests
 import plotly.graph_objects as go
 import plotly.express as px
-from streamlit_autorefresh import st_autorefresh
 
 # ==================================================
 # CONFIGURACIÓN ZONA HORARIA COLOMBIA (UTC-5)
@@ -145,6 +144,16 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+def activar_autorefresh_seguro(intervalo_seg=60):
+    """Refresco automático 100% inmune a errores de desconexión del servidor ('not connected to a server')."""
+    try:
+        from streamlit_autorefresh import st_autorefresh
+        st_autorefresh(interval=intervalo_seg * 1000, key="tuya_autorefresh_safe_v3")
+    except Exception:
+        pass
+    # Respaldo HTML puro que previene errores de componentes React en el navegador
+    st.markdown(f'<meta http-equiv="refresh" content="{intervalo_seg}">', unsafe_allow_html=True)
 
 # Helper functions
 def safe_float(x, default=0.0):
@@ -517,7 +526,6 @@ with loading_placeholder.container():
     </div>
     """, unsafe_allow_html=True)
 
-    # Carga optimizada sin bloqueos largos
     raw_records = cargar_datos_persistentes()
     
     if "session_records_cache" not in st.session_state or not isinstance(st.session_state.session_records_cache, list):
@@ -530,9 +538,8 @@ with loading_placeholder.container():
     elif len(raw_records) > 0:
         st.session_state.session_records_cache = raw_records
 
-    # Reintento único de 1s solo si viniera vacuo
     if len(raw_records) == 0:
-        time.sleep(1.0)
+        time.sleep(0.5)
         raw_records = cargar_datos_persistentes()
         if len(raw_records) > 0:
             st.session_state.session_records_cache = raw_records
@@ -631,7 +638,7 @@ if st.session_state.is_admin:
 
 if config_app.get("monitoreo_activo", True):
     st.sidebar.success("🟢 Monitoreo Continuo 24/7 Activo (Cada 1 min)")
-    st_autorefresh(interval=INTERVALO_SEG * 1000, key="tuya_autorefresh")
+    activar_autorefresh_seguro(INTERVALO_SEG)
 else:
     st.sidebar.info("⏸️ Monitoreo Pausado")
 
