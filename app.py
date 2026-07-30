@@ -99,6 +99,22 @@ def safe_float(x, default=0.0):
     except Exception:
         return default
 
+def convertir_intervalo(intervalo_str):
+    """Convierte texto de intervalo libre (ej: 5s, 30s, 15m, 60m, 2h) a segundos."""
+    try:
+        s = str(intervalo_str).strip().lower()
+        if s.endswith("s"):
+            val = int(s[:-1])
+        elif s.endswith("m"):
+            val = int(s[:-1]) * 60
+        elif s.endswith("h"):
+            val = int(s[:-1]) * 3600
+        else:
+            val = int(s)
+        return max(5, val)
+    except Exception:
+        return 60
+
 def decode_phase_data(base64_string):
     try:
         decoded_bytes = base64.b64decode(base64_string)
@@ -126,6 +142,7 @@ def cargar_config_persistente():
     default_config = {
         "admin_password": "admin",
         "monitoreo_activo": False,
+        "intervalo_str": "60s",
         "intervalo_seg": 60,
         "medidor_sel": "Medidor Nuevo (Julbrainer)",
         "tarifa_cop": 850.0
@@ -220,7 +237,6 @@ def background_tuya_worker():
                     if ultima_reverse is not None:
                         exportado_intervalo = max(0.0, reverse_wh - ultima_reverse)
 
-                    # Timestamp en horario de Colombia (UTC-5)
                     ahora_dt = get_colombia_now()
                     ts_str = ahora_dt.strftime("%Y-%m-%d %H:%M:%S")
                     total_power = phase_values.get("PA", 0.0) + phase_values.get("PB", 0.0) + phase_values.get("PC", 0.0)
@@ -326,21 +342,20 @@ if medidor_sel != config_app.get("medidor_sel") and st.session_state.is_admin:
     config_app["medidor_sel"] = medidor_sel
     guardar_config_persistente(config_app)
 
-intervalo_opciones = {"5s": 5, "15s": 15, "30s": 30, "60s (1 min)": 60, "5 min": 300, "15 min": 900}
-inv_map = {v: k for k, v in intervalo_opciones.items()}
-inv_nombre_actual = inv_map.get(config_app.get("intervalo_seg", 60), "60s (1 min)")
-inv_index = list(intervalo_opciones.keys()).index(inv_nombre_actual)
-
-intervalo_nombre = st.sidebar.selectbox(
-    "Intervalo de Lectura:",
-    list(intervalo_opciones.keys()),
-    index=inv_index,
+# Campo de texto libre para el intervalo (ej: 5s, 30s, 15m, 60m, 2h)
+intervalo_input = st.sidebar.text_input(
+    "Intervalo de Lectura (ej: 5s, 30s, 15m, 60m, 2h):",
+    value=config_app.get("intervalo_str", "60s"),
     disabled=not st.session_state.is_admin
 )
-intervalo_seg = intervalo_opciones[intervalo_nombre]
-if intervalo_seg != config_app.get("intervalo_seg") and st.session_state.is_admin:
+intervalo_seg = convertir_intervalo(intervalo_input)
+
+if st.session_state.is_admin and (intervalo_input != config_app.get("intervalo_str") or intervalo_seg != config_app.get("intervalo_seg")):
+    config_app["intervalo_str"] = intervalo_input
     config_app["intervalo_seg"] = intervalo_seg
     guardar_config_persistente(config_app)
+
+st.sidebar.caption(f"⏱️ Intervalo configurado: **{intervalo_seg} segundos** ({intervalo_input})")
 
 if st.session_state.is_admin:
     nueva_tarifa = st.sidebar.number_input(
@@ -371,7 +386,7 @@ with col_btn2:
         st.rerun()
 
 if config_app.get("monitoreo_activo", False):
-    st.sidebar.success(f"🟢 Activo 24/7 ({intervalo_seg}s)")
+    st.sidebar.success(f"🟢 Activo 24/7 ({intervalo_input} = {intervalo_seg}s)")
     st_autorefresh(interval=intervalo_seg * 1000, key="tuya_autorefresh")
 else:
     st.sidebar.info("⏸️ En pausa")
@@ -380,7 +395,6 @@ else:
 raw_records = cargar_datos_persistentes()
 df_all = pd.DataFrame(raw_records) if len(raw_records) > 0 else pd.DataFrame()
 
-# Garantizar columnas de hora slot
 if not df_all.empty:
     if "hora_slot" not in df_all.columns:
         df_all["hora_slot"] = pd.to_datetime(df_all["timestamp"]).dt.strftime("%H:00")
