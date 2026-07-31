@@ -214,6 +214,39 @@ def merge_datos(datos_locales, datos_nube):
     resultado = [dict_merged[ts] for ts in timestamps_ordenados]
     return depurar_duplicados_1s(resultado)
 
+
+def deberia_guardar_nuevo_registro(datos_existentes, ahora_dt, forward_wh, reverse_wh, fuerza_registro=False, nube_actuales=None):
+    """Determina si una lectura nueva debe registrarse, incluso después de reiniciar el monitoreo."""
+    if fuerza_registro:
+        return True
+
+    if not isinstance(datos_existentes, list) or not datos_existentes:
+        return True
+
+    if isinstance(nube_actuales, list) and len(nube_actuales) == 0 and len(datos_existentes) <= 1:
+        return True
+
+    ultimo_registro = datos_existentes[-1]
+    ultimo_ts = ultimo_registro.get("timestamp")
+    try:
+        ultimo_dt = datetime.strptime(ultimo_ts, "%Y-%m-%d %H:%M:%S")
+        segundos_transcurridos = (ahora_dt.replace(tzinfo=None) - ultimo_dt).total_seconds()
+        if segundos_transcurridos < 50:
+            return False
+    except Exception:
+        return True
+
+    if isinstance(ultimo_registro.get("energia_consumida_wh"), (int, float)) and isinstance(forward_wh, (int, float)):
+        if forward_wh <= ultimo_registro.get("energia_consumida_wh", -1):
+            return False
+
+    if isinstance(ultimo_registro.get("energia_inyectada_wh"), (int, float)) and isinstance(reverse_wh, (int, float)):
+        if reverse_wh <= ultimo_registro.get("energia_inyectada_wh", -1):
+            return False
+
+    return True
+
+
 def calcular_consumo_periodo(sub_df, df_total):
     """Calcula el consumo en kWh de forma precisa para cualquier subgrupo (Hora, Día, Mes, Año)."""
     if sub_df.empty:
@@ -413,18 +446,16 @@ def background_tuya_worker():
                             phase_values[f"P{chr(64+idx)}"] = 0.0
 
                     datos_existentes = cargar_datos_persistentes()
-                    
-                    # CONTROL ESTRICTO DE DUPLICADOS: Mínimo 50 segundos entre lecturas
-                    permitir_nuevo_registro = True
-                    if datos_existentes:
-                        ultimo_ts = datos_existentes[-1].get("timestamp")
-                        try:
-                            ultimo_dt = datetime.strptime(ultimo_ts, "%Y-%m-%d %H:%M:%S")
-                            segundos_transcurridos = (ahora_dt.replace(tzinfo=None) - ultimo_dt).total_seconds()
-                            if segundos_transcurridos < 50:
-                                permitir_nuevo_registro = False
-                        except Exception:
-                            pass
+                    nube_actuales = fetch_cloud_datos_fresh()
+
+                    permitir_nuevo_registro = deberia_guardar_nuevo_registro(
+                        datos_existentes,
+                        ahora_dt,
+                        forward_wh,
+                        reverse_wh,
+                        fuerza_registro=(not datos_existentes),
+                        nube_actuales=nube_actuales
+                    )
 
                     if permitir_nuevo_registro:
                         ultima_forward = datos_existentes[-1].get("energia_consumida_wh") if datos_existentes else None
