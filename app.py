@@ -40,8 +40,9 @@ FORWARD_SCALE_FACTOR = 10.0
 REVERSE_SCALE_FACTOR = 10.0
 INTERVALO_SEG = 60  # Monitoreo continuo fijo a 1 minuto (60 segundos)
 
-CONFIG_FILE = "config_persistent.json"
-DATA_FILE = "datos_monitoreo.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(BASE_DIR, "config_persistent.json")
+DATA_FILE = os.path.join(BASE_DIR, "datos_monitoreo.json")
 
 # BASE DE DATOS PERMANENTE HIGH-SPEED ULTRA-ESTABLE EN LA NUBE (JSONBLOB)
 CLOUD_DB_URL = "https://jsonblob.com/api/jsonBlob/019fb509-4857-7ae8-8ccb-4675aa474ed5"
