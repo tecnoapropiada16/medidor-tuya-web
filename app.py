@@ -40,9 +40,8 @@ FORWARD_SCALE_FACTOR = 10.0
 REVERSE_SCALE_FACTOR = 10.0
 INTERVALO_SEG = 60  # Monitoreo continuo fijo a 1 minuto (60 segundos)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(BASE_DIR, "config_persistent.json")
-DATA_FILE = os.path.join(BASE_DIR, "datos_monitoreo.json")
+CONFIG_FILE = "config_persistent.json"
+DATA_FILE = "datos_monitoreo.json"
 
 # BASE DE DATOS PERMANENTE HIGH-SPEED ULTRA-ESTABLE EN LA NUBE (JSONBLOB)
 CLOUD_DB_URL = "https://jsonblob.com/api/jsonBlob/019fb509-4857-7ae8-8ccb-4675aa474ed5"
@@ -214,38 +213,22 @@ def merge_datos(datos_locales, datos_nube):
     resultado = [dict_merged[ts] for ts in timestamps_ordenados]
     return depurar_duplicados_1s(resultado)
 
-
-def deberia_guardar_nuevo_registro(datos_existentes, ahora_dt, forward_wh, reverse_wh, fuerza_registro=False, nube_actuales=None):
-    """Determina si una lectura nueva debe registrarse, incluso después de reiniciar el monitoreo."""
-    if fuerza_registro:
-        return True
-
-    if not isinstance(datos_existentes, list) or not datos_existentes:
-        return True
-
-    if isinstance(nube_actuales, list) and len(nube_actuales) == 0 and len(datos_existentes) <= 1:
-        return True
-
-    ultimo_registro = datos_existentes[-1]
-    ultimo_ts = ultimo_registro.get("timestamp")
-    try:
-        ultimo_dt = datetime.strptime(ultimo_ts, "%Y-%m-%d %H:%M:%S")
-        segundos_transcurridos = (ahora_dt.replace(tzinfo=None) - ultimo_dt).total_seconds()
-        if segundos_transcurridos < 50:
-            return False
-    except Exception:
-        return True
-
-    if isinstance(ultimo_registro.get("energia_consumida_wh"), (int, float)) and isinstance(forward_wh, (int, float)):
-        if forward_wh <= ultimo_registro.get("energia_consumida_wh", -1):
-            return False
-
-    if isinstance(ultimo_registro.get("energia_inyectada_wh"), (int, float)) and isinstance(reverse_wh, (int, float)):
-        if reverse_wh <= ultimo_registro.get("energia_inyectada_wh", -1):
-            return False
-
-    return True
-
+def obtener_ultimo_timestamp_valido(datos, ahora_dt=None):
+    """Obtiene el último timestamp en la lista que no sea futuro respecto a la hora actual."""
+    if not datos or not isinstance(datos, list):
+        return None
+    if ahora_dt is None:
+        ahora_dt = get_colombia_now()
+    ahora_naive = ahora_dt.replace(tzinfo=None)
+    for item in reversed(datos):
+        if isinstance(item, dict) and "timestamp" in item:
+            try:
+                dt = datetime.strptime(item["timestamp"], "%Y-%m-%d %H:%M:%S")
+                if dt <= ahora_naive:
+                    return dt
+            except Exception:
+                pass
+    return None
 
 def calcular_consumo_periodo(sub_df, df_total):
     """Calcula el consumo en kWh de forma precisa para cualquier subgrupo (Hora, Día, Mes, Año)."""
@@ -346,21 +329,21 @@ def cargar_datos_persistentes():
     return GLOBAL_RECORDS_CACHE
 
 def guardar_datos_persistentes(nuevos_datos):
-    """GUARDA DE SEGURIDAD ABSOLUTA: ABORTA LA ESCRITURA SI LOS DATOS A ENVIAR SON MENORES QUE LA NUBE"""
+    """GUARDA DE SEGURIDAD ABSOLUTA: ABORTA LA ESCRITURA SI SE INTENTA PERDER TIMESTAMPS EXISTENTES"""
     global GLOBAL_RECORDS_CACHE
     
     nube_actuales = fetch_cloud_datos_fresh()
 
-    # Si la nube contiene más registros de los que tiene el proceso actual (arranque nuevo), adoptar la nube
     if len(nube_actuales) > len(GLOBAL_RECORDS_CACHE):
         GLOBAL_RECORDS_CACHE = merge_datos(GLOBAL_RECORDS_CACHE, nube_actuales)
 
-    # Fusión Atómica Inviolable
     datos_consolidados = merge_datos(GLOBAL_RECORDS_CACHE, merge_datos(nube_actuales, nuevos_datos))
 
-    # GUARDA ANTI-REDUCCIÓN: Abortar si datos_consolidados es menor que lo que ya existía en la nube
-    if len(nube_actuales) > 0 and len(datos_consolidados) < len(nube_actuales):
-        print(f"[GUARDA DE SEGURIDAD] Abortando escritura: Nube tiene {len(nube_actuales)} y se intentaba enviar {len(datos_consolidados)}.")
+    ts_nube = set(d["timestamp"] for d in nube_actuales if isinstance(d, dict) and "timestamp" in d)
+    ts_consolidados = set(d["timestamp"] for d in datos_consolidados if isinstance(d, dict) and "timestamp" in d)
+    
+    if ts_nube and not ts_nube.issubset(ts_consolidados):
+        print(f"[GUARDA DE SEGURIDAD] Abortando escritura: se perderían {len(ts_nube - ts_consolidados)} timestamps de la nube.")
         return
 
     GLOBAL_RECORDS_CACHE = datos_consolidados
@@ -398,6 +381,122 @@ def borrar_todos_los_registros():
     except Exception:
         pass
 
+def ejecutar_captura_tuya():
+    """Realiza la lectura desde Tuya Cloud y guarda el nuevo registro si han pasado >= 50 segundos."""
+    try:
+        cfg = cargar_config_persistente()
+        if not cfg.get("monitoreo_activo", True):
+            return False, "Monitoreo pausado"
+
+        medidor_nombre = cfg.get("medidor_sel", "Medidor Nuevo (Julbrainer)")
+        device_id = MEDIDORES.get(medidor_nombre, list(MEDIDORES.values())[0])
+
+        cloud = tinytuya.Cloud(
+            apiRegion=CONFIG["API_REGION"],
+            apiKey=CONFIG["API_KEY"],
+            apiSecret=CONFIG["API_SECRET"],
+            apiDeviceID=device_id
+        )
+        raw = cloud.getstatus(device_id)
+        ahora_dt = get_colombia_now()
+        ts_str = ahora_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        if raw and raw.get("success", False):
+            cfg["is_online"] = True
+            cfg["last_online_check"] = ts_str
+            guardar_config_persistente(cfg)
+
+            datos_raw = procesar_datos_crudos(raw.get("result", []))
+            forward_wh = safe_float(datos_raw.get("forward_energy_total", 0)) * FORWARD_SCALE_FACTOR
+            reverse_wh = safe_float(datos_raw.get("reverse_energy_total", 0)) * REVERSE_SCALE_FACTOR
+
+            phase_values = {}
+            for idx, code in enumerate(CONFIG["PHASE_CODES"], start=1):
+                raw_phase = datos_raw.get(code)
+                if raw_phase:
+                    decoded = decode_phase_data(raw_phase)
+                    if "error" not in decoded:
+                        phase_values[f"V{chr(64+idx)}"] = round(decoded["Voltaje"], 2)
+                        phase_values[f"I{chr(64+idx)}"] = round(decoded["Corriente"], 3)
+                        phase_values[f"P{chr(64+idx)}"] = round(decoded["Potencia"], 1)
+                    else:
+                        phase_values[f"V{chr(64+idx)}"] = 0.0
+                        phase_values[f"I{chr(64+idx)}"] = 0.0
+                        phase_values[f"P{chr(64+idx)}"] = 0.0
+                else:
+                    phase_values[f"V{chr(64+idx)}"] = 0.0
+                    phase_values[f"I{chr(64+idx)}"] = 0.0
+                    phase_values[f"P{chr(64+idx)}"] = 0.0
+
+            datos_existentes = cargar_datos_persistentes()
+            ahora_naive = ahora_dt.replace(tzinfo=None)
+            ultimo_dt = obtener_ultimo_timestamp_valido(datos_existentes, ahora_dt)
+
+            permitir_nuevo_registro = True
+            if ultimo_dt:
+                segundos_transcurridos = (ahora_naive - ultimo_dt).total_seconds()
+                if 0 <= segundos_transcurridos < 50:
+                    permitir_nuevo_registro = False
+
+            if permitir_nuevo_registro:
+                ultima_forward = None
+                ultima_reverse = None
+                if datos_existentes:
+                    for d in reversed(datos_existentes):
+                        if d.get("energia_consumida_wh") is not None:
+                            ultima_forward = d.get("energia_consumida_wh")
+                            ultima_reverse = d.get("energia_inyectada_wh")
+                            break
+
+                consumo_intervalo = 0.0
+                exportado_intervalo = 0.0
+                if ultima_forward is not None:
+                    consumo_intervalo = max(0.0, forward_wh - ultima_forward)
+                if ultima_reverse is not None:
+                    exportado_intervalo = max(0.0, reverse_wh - ultima_reverse)
+
+                total_power = phase_values.get("PA", 0.0) + phase_values.get("PB", 0.0) + phase_values.get("PC", 0.0)
+
+                nuevo_registro = {
+                    "timestamp": ts_str,
+                    "fecha": ahora_dt.strftime("%Y-%m-%d"),
+                    "hora": ahora_dt.strftime("%H:%M:%S"),
+                    "hora_slot": ahora_dt.strftime("%H:00"),
+                    "fecha_hora_slot": ahora_dt.strftime("%Y-%m-%d %H:00"),
+                    "mes": ahora_dt.strftime("%Y-%m"),
+                    "anio": ahora_dt.strftime("%Y"),
+                    "energia_consumida_wh": round(forward_wh, 4),
+                    "energia_inyectada_wh": round(reverse_wh, 4),
+                    "consumo_intervalo_wh": round(consumo_intervalo, 4),
+                    "exportado_intervalo_wh": round(exportado_intervalo, 4),
+                    "potencia_total_w": round(total_power, 1),
+                    "Va": phase_values.get("VA", phase_values.get("Va", 0.0)),
+                    "Ia": phase_values.get("IA", phase_values.get("Ia", 0.0)),
+                    "Pa": phase_values.get("PA", phase_values.get("Pa", 0.0)),
+                    "Vb": phase_values.get("VB", phase_values.get("Vb", 0.0)),
+                    "Ib": phase_values.get("IB", phase_values.get("Ib", 0.0)),
+                    "Pb": phase_values.get("PB", phase_values.get("Pb", 0.0)),
+                    "Vc": phase_values.get("VC", phase_values.get("Vc", 0.0)),
+                    "Ic": phase_values.get("IC", phase_values.get("Ic", 0.0)),
+                    "Pc": phase_values.get("PC", phase_values.get("Pc", 0.0))
+                }
+
+                guardar_datos_persistentes([nuevo_registro])
+                print(f"[TUYA OK] Registro guardado: {ts_str} (Total acumulado: {len(GLOBAL_RECORDS_CACHE)})")
+                return True, "Nuevo registro guardado"
+            else:
+                return False, "Intervalo menor a 50s"
+        else:
+            msg = raw.get("msg", "Error desconocido") if isinstance(raw, dict) else "Sin respuesta"
+            print(f"[TUYA CLOUD ERROR] {ts_str} - {msg}")
+            cfg["is_online"] = False
+            cfg["last_online_check"] = ts_str
+            guardar_config_persistente(cfg)
+            return False, f"Error Tuya Cloud: {msg}"
+    except Exception as e:
+        print("[EJECUTAR CAPTURA ERROR]", e)
+        return False, str(e)
+
 # HILO DE MONITOREO DE FONDO 24/7 (Singleton asegurado con @st.cache_resource)
 def background_tuya_worker():
     print("[HILO FONDO PROTEGIDO] Servicio activo con guarda anti-reducción...")
@@ -405,103 +504,7 @@ def background_tuya_worker():
         try:
             cfg = cargar_config_persistente()
             if cfg.get("monitoreo_activo", True):
-                medidor_nombre = cfg.get("medidor_sel", "Medidor Nuevo (Julbrainer)")
-                device_id = MEDIDORES.get(medidor_nombre, list(MEDIDORES.values())[0])
-
-                cloud = tinytuya.Cloud(
-                    apiRegion=CONFIG["API_REGION"],
-                    apiKey=CONFIG["API_KEY"],
-                    apiSecret=CONFIG["API_SECRET"],
-                    apiDeviceID=device_id
-                )
-                raw = cloud.getstatus(device_id)
-                ahora_dt = get_colombia_now()
-                ts_str = ahora_dt.strftime("%Y-%m-%d %H:%M:%S")
-
-                if raw and raw.get("success", False):
-                    cfg["is_online"] = True
-                    cfg["last_online_check"] = ts_str
-                    guardar_config_persistente(cfg)
-
-                    datos_raw = procesar_datos_crudos(raw.get("result", []))
-                    forward_wh = safe_float(datos_raw.get("forward_energy_total", 0)) * FORWARD_SCALE_FACTOR
-                    reverse_wh = safe_float(datos_raw.get("reverse_energy_total", 0)) * REVERSE_SCALE_FACTOR
-
-                    phase_values = {}
-                    for idx, code in enumerate(CONFIG["PHASE_CODES"], start=1):
-                        raw_phase = datos_raw.get(code)
-                        if raw_phase:
-                            decoded = decode_phase_data(raw_phase)
-                            if "error" not in decoded:
-                                phase_values[f"V{chr(64+idx)}"] = round(decoded["Voltaje"], 2)
-                                phase_values[f"I{chr(64+idx)}"] = round(decoded["Corriente"], 3)
-                                phase_values[f"P{chr(64+idx)}"] = round(decoded["Potencia"], 1)
-                            else:
-                                phase_values[f"V{chr(64+idx)}"] = 0.0
-                                phase_values[f"I{chr(64+idx)}"] = 0.0
-                                phase_values[f"P{chr(64+idx)}"] = 0.0
-                        else:
-                            phase_values[f"V{chr(64+idx)}"] = 0.0
-                            phase_values[f"I{chr(64+idx)}"] = 0.0
-                            phase_values[f"P{chr(64+idx)}"] = 0.0
-
-                    datos_existentes = cargar_datos_persistentes()
-                    nube_actuales = fetch_cloud_datos_fresh()
-
-                    permitir_nuevo_registro = deberia_guardar_nuevo_registro(
-                        datos_existentes,
-                        ahora_dt,
-                        forward_wh,
-                        reverse_wh,
-                        fuerza_registro=(not datos_existentes),
-                        nube_actuales=nube_actuales
-                    )
-
-                    if permitir_nuevo_registro:
-                        ultima_forward = datos_existentes[-1].get("energia_consumida_wh") if datos_existentes else None
-                        ultima_reverse = datos_existentes[-1].get("energia_inyectada_wh") if datos_existentes else None
-
-                        consumo_intervalo = 0.0
-                        exportado_intervalo = 0.0
-                        if ultima_forward is not None:
-                            consumo_intervalo = max(0.0, forward_wh - ultima_forward)
-                        if ultima_reverse is not None:
-                            exportado_intervalo = max(0.0, reverse_wh - ultima_reverse)
-
-                        total_power = phase_values.get("PA", 0.0) + phase_values.get("PB", 0.0) + phase_values.get("PC", 0.0)
-
-                        nuevo_registro = {
-                            "timestamp": ts_str,
-                            "fecha": ahora_dt.strftime("%Y-%m-%d"),
-                            "hora": ahora_dt.strftime("%H:%M:%S"),
-                            "hora_slot": ahora_dt.strftime("%H:00"),
-                            "fecha_hora_slot": ahora_dt.strftime("%Y-%m-%d %H:00"),
-                            "mes": ahora_dt.strftime("%Y-%m"),
-                            "anio": ahora_dt.strftime("%Y"),
-                            "energia_consumida_wh": round(forward_wh, 4),
-                            "energia_inyectada_wh": round(reverse_wh, 4),
-                            "consumo_intervalo_wh": round(consumo_intervalo, 4),
-                            "exportado_intervalo_wh": round(exportado_intervalo, 4),
-                            "potencia_total_w": round(total_power, 1),
-                            "Va": phase_values.get("VA", phase_values.get("Va", 0.0)),
-                            "Ia": phase_values.get("IA", phase_values.get("Ia", 0.0)),
-                            "Pa": phase_values.get("PA", phase_values.get("Pa", 0.0)),
-                            "Vb": phase_values.get("VB", phase_values.get("Vb", 0.0)),
-                            "Ib": phase_values.get("IB", phase_values.get("Ib", 0.0)),
-                            "Pb": phase_values.get("PB", phase_values.get("Pb", 0.0)),
-                            "Vc": phase_values.get("VC", phase_values.get("Vc", 0.0)),
-                            "Ic": phase_values.get("IC", phase_values.get("Ic", 0.0)),
-                            "Pc": phase_values.get("PC", phase_values.get("Pc", 0.0))
-                        }
-
-                        guardar_datos_persistentes([nuevo_registro])
-                        print(f"[HILO FONDO OK] Registro guardado a 1 min (Total en memoria: {len(GLOBAL_RECORDS_CACHE)}): {ts_str}")
-
-                else:
-                    cfg["is_online"] = False
-                    cfg["last_online_check"] = ts_str
-                    guardar_config_persistente(cfg)
-
+                ejecutar_captura_tuya()
                 time.sleep(INTERVALO_SEG)
             else:
                 time.sleep(2)
@@ -526,50 +529,16 @@ config_app = cargar_config_persistente()
 if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
 
-# =========================================================================
-# BÚSQUEDA CONTINUA ININTERRUMPIDA: EL ANILLO AZUL NO SE APAGA SI SOLO HAY 1 REGISTRO
-# SOLO SE APAGA SI CONFIRMA MÁS DE 1 REGISTRO (len > 1) O TRAS MÚLTIPLES REINTENTOS
-# =========================================================================
-loading_placeholder = st.empty()
+# CARGA DE HISTORIAL Y SINCRONIZACIÓN BAJO DEMANDA AL ABRIR LA APP
+raw_records = cargar_datos_persistentes()
+ahora_col = get_colombia_now()
+ultimo_dt_val = obtener_ultimo_timestamp_valido(raw_records, ahora_col)
 
-with loading_placeholder.container():
-    st.markdown("""
-    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 380px; width: 100%; text-align: center;">
-        <div class="custom-blue-spinner"></div>
-        <div style="margin-top: 24px; font-size: 19px; font-weight: 700; color: #0369a1;">
-            🔄 Sincronizando historial acumulado en el servidor de la nube...
-        </div>
-        <div style="margin-top: 8px; font-size: 14px; color: #64748b;">
-            Buscando datos acumulados... el círculo azul no se apaga si solo hay 1 registro.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    if "session_records_cache" not in st.session_state or not isinstance(st.session_state.session_records_cache, list):
-        st.session_state.session_records_cache = []
-
-    raw_records = []
-    intentos = 0
-
-    # Bucle continuo: SOLO SE APAGA SI OBTIENE MÁS DE 1 REGISTRO (len > 1)
-    while intentos < 14:
-        intentos += 1
-        nube = fetch_cloud_datos_fresh()
-        merged = merge_datos(st.session_state.session_records_cache, merge_datos(GLOBAL_RECORDS_CACHE, nube))
-        
-        # EXIGIR MÁS DE 1 REGISTRO PARA APAGAR LA RUEDA AZUL
-        if len(merged) > 1:
-            st.session_state.session_records_cache = merged
-            raw_records = merged
-            break
-            
-        time.sleep(0.5)
-
-    if len(raw_records) == 0:
-        raw_records = st.session_state.session_records_cache if len(st.session_state.session_records_cache) > 0 else merged
-
-# LIMPIAR CÍRCULO AZUL SOLO CUANDO SE CONFIRME MÁS DE 1 REGISTRO
-loading_placeholder.empty()
+if config_app.get("monitoreo_activo", True):
+    if ultimo_dt_val is None or (ahora_col.replace(tzinfo=None) - ultimo_dt_val).total_seconds() >= 50:
+        exito, _ = ejecutar_captura_tuya()
+        if exito:
+            raw_records = cargar_datos_persistentes()
 
 # --- SIDEBAR (ACCESO, ROLES Y CONTROLES ADMIN) ---
 st.sidebar.title("🔐 Acceso y Roles")
