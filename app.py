@@ -262,8 +262,17 @@ def calcular_consumo_periodo(sub_df, df_total):
             
     return round(delta_c / 1000.0, 3), round(delta_e / 1000.0, 3)
 
+LAST_CLOUD_FETCH_TIME = 0
+CACHED_CLOUD_DATA = []
+
 def fetch_cloud_datos_fresh():
-    """Consulta la nube JSONBlob ultra-rápida y garantizada sin errores."""
+    """Consulta la nube JSONBlob con caché de 15s y fallback ante errores/rate limits 429."""
+    global LAST_CLOUD_FETCH_TIME, CACHED_CLOUD_DATA
+    ahora_sec = time.time()
+
+    if CACHED_CLOUD_DATA and (ahora_sec - LAST_CLOUD_FETCH_TIME) < 15:
+        return CACHED_CLOUD_DATA
+
     try:
         headers = {
             "Accept": "application/json",
@@ -272,11 +281,16 @@ def fetch_cloud_datos_fresh():
         res = requests.get(CLOUD_DB_URL, headers=headers, timeout=5)
         if res.status_code == 200:
             datos_raw = res.json().get("datos", [])
-            if isinstance(datos_raw, list):
+            if isinstance(datos_raw, list) and len(datos_raw) > 0:
+                CACHED_CLOUD_DATA = datos_raw
+                LAST_CLOUD_FETCH_TIME = ahora_sec
                 return datos_raw
+        elif res.status_code == 429:
+            print("[NUBE GET 429] Rate limit en JSONBlob, conservando datos en memoria y local.")
     except Exception as e:
         print("[NUBE GET LOG]", e)
-    return []
+
+    return CACHED_CLOUD_DATA if CACHED_CLOUD_DATA else GLOBAL_RECORDS_CACHE
 
 # FUNCIONES DE PERSISTENCIA CON PROTECCIÓN ANTI-SOBREESCRITURA Y GUARDA DE SEGURIDAD
 def cargar_config_persistente():
@@ -329,24 +343,11 @@ def cargar_datos_persistentes():
     return GLOBAL_RECORDS_CACHE
 
 def guardar_datos_persistentes(nuevos_datos):
-    """GUARDA DE SEGURIDAD ABSOLUTA: ABORTA LA ESCRITURA SI SE INTENTA PERDER TIMESTAMPS EXISTENTES"""
+    """GUARDA DE SEGURIDAD ABSOLUTA: ACUMULA Y CONSERVA SIEMPRE TODO EL HISTORIAL"""
     global GLOBAL_RECORDS_CACHE
     
     nube_actuales = fetch_cloud_datos_fresh()
-
-    if len(nube_actuales) > len(GLOBAL_RECORDS_CACHE):
-        GLOBAL_RECORDS_CACHE = merge_datos(GLOBAL_RECORDS_CACHE, nube_actuales)
-
-    datos_consolidados = merge_datos(GLOBAL_RECORDS_CACHE, merge_datos(nube_actuales, nuevos_datos))
-
-    ts_nube = set(d["timestamp"] for d in nube_actuales if isinstance(d, dict) and "timestamp" in d)
-    ts_consolidados = set(d["timestamp"] for d in datos_consolidados if isinstance(d, dict) and "timestamp" in d)
-    
-    if ts_nube and not ts_nube.issubset(ts_consolidados):
-        print(f"[GUARDA DE SEGURIDAD] Abortando escritura: se perderían {len(ts_nube - ts_consolidados)} timestamps de la nube.")
-        return
-
-    GLOBAL_RECORDS_CACHE = datos_consolidados
+    GLOBAL_RECORDS_CACHE = merge_datos(GLOBAL_RECORDS_CACHE, merge_datos(nube_actuales, nuevos_datos))
 
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -361,6 +362,8 @@ def guardar_datos_persistentes(nuevos_datos):
         res = requests.put(CLOUD_DB_URL, json=payload, headers=headers, timeout=6)
         if res.status_code == 200:
             print(f"[NUBE PUT OK] {len(GLOBAL_RECORDS_CACHE)} registros acumulados guardados con éxito.")
+        elif res.status_code == 429:
+            print(f"[NUBE PUT 429] Rate limit al enviar a JSONBlob, conservando {len(GLOBAL_RECORDS_CACHE)} registros en local.")
     except Exception as e:
         print("[NUBE PUT ERROR]", e)
 
