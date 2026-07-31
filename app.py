@@ -262,8 +262,21 @@ def calcular_consumo_periodo(sub_df, df_total):
             
     return round(delta_c / 1000.0, 3), round(delta_e / 1000.0, 3)
 
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/tecnoapropiada16/medidor-tuya-web/main/datos_monitoreo.json"
 LAST_CLOUD_FETCH_TIME = 0
 CACHED_CLOUD_DATA = []
+
+def fetch_base_github_datos():
+    """Obtiene el historial base permanente garantizado desde el repositorio de GitHub."""
+    try:
+        res = requests.get(GITHUB_RAW_URL, timeout=4)
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, list) and len(data) > 0:
+                return data
+    except Exception as e:
+        print("[GITHUB RAW LOG]", e)
+    return []
 
 def fetch_cloud_datos_fresh():
     """Consulta la nube JSONBlob con caché de 15s y fallback ante errores/rate limits 429."""
@@ -329,10 +342,14 @@ def cargar_datos_persistentes():
         except Exception:
             datos_locales = []
             
+    datos_base_github = fetch_base_github_datos()
     datos_nube = fetch_cloud_datos_fresh()
 
-    # FUSIÓN TRIPLE PERMANENTE QUE NUNCA BORRA REGISTROS ACUMULADOS
-    GLOBAL_RECORDS_CACHE = merge_datos(GLOBAL_RECORDS_CACHE, merge_datos(datos_locales, datos_nube))
+    # FUSIÓN CUÁDRUPLE PERMANENTE: GitHub Base + Disco Local + Nube JSONBlob + Memoria Cache
+    GLOBAL_RECORDS_CACHE = merge_datos(
+        GLOBAL_RECORDS_CACHE,
+        merge_datos(datos_base_github, merge_datos(datos_locales, datos_nube))
+    )
     
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -346,8 +363,12 @@ def guardar_datos_persistentes(nuevos_datos):
     """GUARDA DE SEGURIDAD ABSOLUTA: ACUMULA Y CONSERVA SIEMPRE TODO EL HISTORIAL"""
     global GLOBAL_RECORDS_CACHE
     
+    datos_base_github = fetch_base_github_datos()
     nube_actuales = fetch_cloud_datos_fresh()
-    GLOBAL_RECORDS_CACHE = merge_datos(GLOBAL_RECORDS_CACHE, merge_datos(nube_actuales, nuevos_datos))
+    GLOBAL_RECORDS_CACHE = merge_datos(
+        GLOBAL_RECORDS_CACHE,
+        merge_datos(datos_base_github, merge_datos(nube_actuales, nuevos_datos))
+    )
 
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
